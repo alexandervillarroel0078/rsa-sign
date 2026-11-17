@@ -1,0 +1,14 @@
+# Cache de Python
+__pycache__/
+*.py[cod]
+
+# Entornos virtuales
+.venv/
+
+# Claves (nunca versionar)
+*.pem
+*.key
+
+# Claves de prueba
+test_keys/
+*_test_key*
