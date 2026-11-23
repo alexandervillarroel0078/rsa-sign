@@ -12,3 +12,9 @@ __pycache__/
 # Claves de prueba
 test_keys/
 *_test_key*
+
+# Archivos de trabajo del equipo (no entregables)
+informe*.md
+prompt_CU*.md
+*.log
+rsa_suite.log
