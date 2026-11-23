@@ -14,10 +14,12 @@ from pathlib import Path
 try:
     from .mathcore import gcd, modexp, modinv
     from .primes import generate_prime
+    from .oaep import oaep_decode, oaep_encode
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.mathcore import gcd, modexp, modinv
     from src.primes import generate_prime
+    from src.oaep import oaep_decode, oaep_encode
 
 
 # Exponente publico estandar de Fermat F4 = 2^16 + 1
@@ -201,6 +203,87 @@ def decrypt(ct: bytes, private: tuple[int, int]) -> bytes:
 
     # Convertir entero m a bytes sin padding adicional
     return int_to_bytes(m)
+
+
+def encrypt_oaep(msg: bytes, public: tuple[int, int], label: bytes = b"") -> bytes:
+    """
+    Cifra un mensaje utilizando relleno OAEP (SHA-256) y clave publica RSA (n, e).
+
+    Aplica oaep_encode(msg, k, label) donde k = (n.bit_length() + 7) // 8,
+    convierte el bloque codificado EM a entero m, y calcula c = modexp(m, e, n).
+    Devuelve el criptograma de longitud fija k bytes.
+
+    :param msg: Mensaje en bytes a cifrar.
+    :param public: Tupla (n, e) con el modulo y exponente publico.
+    :param label: Etiqueta opcional asociada.
+    :return: Criptograma en bytes de longitud k.
+    :raises TypeError: Si los parametros no tienen los tipos esperados.
+    :raises ValueError: Si el modulo es insuficiente o el mensaje excede la capacidad.
+    """
+    if not isinstance(msg, (bytes, bytearray)):
+        raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
+    if not isinstance(label, (bytes, bytearray)):
+        raise TypeError("La etiqueta debe ser de tipo bytes o bytearray.")
+    if not (isinstance(public, tuple) and len(public) == 2):
+        raise TypeError("La clave publica debe ser una tupla (n, e).")
+
+    n, e = public
+    if not (isinstance(n, int) and isinstance(e, int) and not isinstance(n, bool) and not isinstance(e, bool)):
+        raise TypeError("Los componentes de la clave publica deben ser enteros.")
+    if n <= 0 or e <= 0:
+        raise ValueError("Los componentes de la clave publica deben ser enteros positivos.")
+
+    k = (n.bit_length() + 7) // 8
+    max_len = k - 2 * 32 - 2
+    if len(msg) > max_len:
+        raise ValueError(
+            f"Mensaje demasiado largo para OAEP-SHA256: {len(msg)} > {max_len} bytes."
+        )
+
+    em = oaep_encode(msg, k, label)
+    m = bytes_to_int(em)
+    c = modexp(m, e, n)
+    return int_to_bytes(c, length=k)
+
+
+def decrypt_oaep(ct: bytes, private: tuple[int, int], label: bytes = b"") -> bytes:
+    """
+    Descifra un criptograma con relleno OAEP (SHA-256) y clave privada RSA (n, d).
+
+    Verifica c < n, calcula m = modexp(c, d, n), convierte m a bloque EM de k bytes,
+    y aplica oaep_decode(em, k, label). Lanza ValueError si el relleno o etiqueta es invalido.
+
+    :param ct: Criptograma en bytes de longitud k.
+    :param private: Tupla (n, d) con el modulo y exponente privado.
+    :param label: Etiqueta opcional asociada.
+    :return: Mensaje original en bytes.
+    :raises TypeError: Si los parametros no tienen los tipos esperados.
+    :raises ValueError: Si c >= n, longitud invalida o falla la decodificacion OAEP.
+    """
+    if not isinstance(ct, (bytes, bytearray)):
+        raise TypeError("El criptograma debe ser de tipo bytes o bytearray.")
+    if not isinstance(label, (bytes, bytearray)):
+        raise TypeError("La etiqueta debe ser de tipo bytes o bytearray.")
+    if not (isinstance(private, tuple) and len(private) == 2):
+        raise TypeError("La clave privada debe ser una tupla (n, d).")
+
+    n, d = private
+    if not (isinstance(n, int) and isinstance(d, int) and not isinstance(n, bool) and not isinstance(d, bool)):
+        raise TypeError("Los componentes de la clave privada deben ser enteros.")
+    if n <= 0 or d <= 0:
+        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+
+    k = (n.bit_length() + 7) // 8
+    if len(ct) != k:
+        raise ValueError(f"Longitud de criptograma incorrecta: {len(ct)} != {k}.")
+
+    c = bytes_to_int(ct)
+    if c >= n:
+        raise ValueError("El criptograma es invalido para el modulo (c >= n).")
+
+    m = modexp(c, d, n)
+    em = int_to_bytes(m, length=k)
+    return oaep_decode(em, k, label)
 
 
 def save_public_key(public: tuple[int, int], path: str | Path) -> None:
@@ -387,3 +470,23 @@ if __name__ == "__main__":
     print(f"Criptograma (longitud {len(criptograma)} bytes): {criptograma.hex()[:32]}...")
     print(f"Mensaje recuperado: {mensaje_recuperado.decode('utf-8')}")
     print(f"Round-trip exitoso: {mensaje_recuperado == mensaje_original}")
+
+    print("\n=== Demo Cifrado y Descifrado RSA con Relleno OAEP ===")
+    pub512_demo, priv512_demo = generate_keypair(512)
+    # Comprobar comportamiento ante clave de 512 bits (k=64 < 66 bytes requeridos por OAEP-SHA256)
+    try:
+        encrypt_oaep(b"Hola OAEP", pub512_demo)
+        error_capturado = False
+    except ValueError:
+        error_capturado = True
+    print(f"Rechazo correcto de clave 512 bits por capacidad OAEP-SHA256: {error_capturado}")
+
+    pub1024_demo, priv1024_demo = generate_keypair(1024)
+    mensaje_oaep = b"Hola OAEP"
+    ct_oaep = encrypt_oaep(mensaje_oaep, pub1024_demo)
+    recuperado_oaep = decrypt_oaep(ct_oaep, priv1024_demo)
+
+    print(f"Mensaje original OAEP: {mensaje_oaep.decode('utf-8')}")
+    print(f"Criptograma OAEP (longitud {len(ct_oaep)} bytes): {ct_oaep.hex()[:32]}...")
+    print(f"Mensaje recuperado OAEP: {recuperado_oaep.decode('utf-8')}")
+    print(f"Round-trip OAEP exitoso: {recuperado_oaep == mensaje_oaep}")
