@@ -15,11 +15,15 @@ try:
     from .mathcore import gcd, modexp, modinv
     from .primes import generate_prime
     from .oaep import oaep_decode, oaep_encode
+    from .pss import emsa_pss_encode, emsa_pss_verify
+    from .sha256 import sha256
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.mathcore import gcd, modexp, modinv
     from src.primes import generate_prime
     from src.oaep import oaep_decode, oaep_encode
+    from src.pss import emsa_pss_encode, emsa_pss_verify
+    from src.sha256 import sha256
 
 
 # Exponente publico estandar de Fermat F4 = 2^16 + 1
@@ -286,6 +290,113 @@ def decrypt_oaep(ct: bytes, private: tuple[int, int], label: bytes = b"") -> byt
     return oaep_decode(em, k, label)
 
 
+def sign(msg: bytes, private: tuple[int, int], salt_len: int = 32) -> bytes:
+    """
+    Firma un mensaje utilizando el esquema RSA-PSS con SHA-256 (RFC 8017).
+
+    Aplica EMSA-PSS-SHA256 al mensaje con longitud em_bits = n.bit_length() - 1,
+    convierte el bloque EM resultante a entero m, y calcula la firma s = m^d (mod n).
+    Devuelve la firma con longitud fija de k bytes, igual al tamano del modulo n.
+
+    :param msg: Mensaje en bytes a firmar.
+    :param private: Tupla (n, d) con la clave privada RSA.
+    :param salt_len: Longitud del salt aleatorio en bytes (por defecto 32).
+    :return: Firma digital en bytes de longitud k bytes.
+    :raises TypeError: Si msg no es bytes o la clave privada no es tupla de enteros.
+    :raises ValueError: Si la clave privada es invalida o el modulo es insuficiente.
+    """
+    if not isinstance(msg, (bytes, bytearray)):
+        raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
+    if not (isinstance(private, tuple) and len(private) == 2):
+        raise TypeError("La clave privada debe ser una tupla (n, d).")
+
+    n, d = private
+    if not (isinstance(n, int) and isinstance(d, int) and not isinstance(n, bool) and not isinstance(d, bool)):
+        raise TypeError("Los componentes de la clave privada deben ser enteros.")
+    if n <= 0 or d <= 0:
+        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+
+    k = (n.bit_length() + 7) // 8
+    em_bits = n.bit_length() - 1
+
+    # Resumen criptografico del mensaje con SHA-256
+    m_hash = sha256(bytes(msg))
+
+    # Codificacion EMSA-PSS
+    em = emsa_pss_encode(m_hash, em_bits, salt_len=salt_len)
+
+    # Conversion a entero y operacion con clave privada s = m^d (mod n)
+    m = bytes_to_int(em)
+    s = modexp(m, d, n)
+
+    # Devolver firma de longitud fija k bytes
+    return int_to_bytes(s, length=k)
+
+
+def verify(msg: bytes, sig: bytes, public: tuple[int, int], salt_len: int = 32) -> bool:
+    """
+    Verifica una firma digital RSA-PSS con SHA-256 (RFC 8017).
+
+    Convierte la firma sig a entero s, valida s < n y que su longitud sea k,
+    recupera el mensaje codificado m = s^e (mod n), lo formatea a em_len bytes,
+    y ejecuta la verificacion EMSA-PSS-SHA256 contra el hash del mensaje.
+
+    NUNCA lanza excepciones por firma invalida (solo por tipos de argumentos invalidos).
+
+    :param msg: Mensaje original en bytes.
+    :param sig: Firma en bytes a verificar.
+    :param public: Tupla (n, e) con la clave publica RSA.
+    :param salt_len: Longitud del salt esperado en bytes (por defecto 32).
+    :return: True si la firma es valida, False en caso contrario.
+    :raises TypeError: Si msg, sig, public o sus componentes no tienen tipos validos.
+    """
+    if not isinstance(msg, (bytes, bytearray)):
+        raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
+    if not isinstance(sig, (bytes, bytearray)):
+        raise TypeError("La firma debe ser de tipo bytes o bytearray.")
+    if not (isinstance(public, tuple) and len(public) == 2):
+        raise TypeError("La clave publica debe ser una tupla (n, e).")
+
+    n, e = public
+    if not (isinstance(n, int) and isinstance(e, int) and not isinstance(n, bool) and not isinstance(e, bool)):
+        raise TypeError("Los componentes de la clave publica deben ser enteros.")
+    if not isinstance(salt_len, int) or isinstance(salt_len, bool):
+        raise TypeError("salt_len debe ser un entero.")
+
+    if n <= 0 or e <= 0:
+        return False
+
+    k = (n.bit_length() + 7) // 8
+    # Validar longitud de la firma: debe ser exactamente k bytes
+    if len(sig) != k:
+        return False
+
+    s = bytes_to_int(sig)
+    # Firma s debe ser estrictamente menor que el modulo n
+    if s >= n:
+        return False
+
+    em_bits = n.bit_length() - 1
+    em_len = (em_bits + 7) // 8
+
+    # Modulo debe admitir la longitud requerida para PSS
+    if em_len < 32 + salt_len + 2:
+        return False
+
+    # Operacion con clave publica m = s^e (mod n)
+    m = modexp(s, e, n)
+
+    # Convertir m a bloque EM de em_len bytes
+    try:
+        em = int_to_bytes(m, length=em_len)
+    except (ValueError, OverflowError):
+        return False
+
+    # Resumen criptografico del mensaje y verificacion EMSA-PSS
+    m_hash = sha256(bytes(msg))
+    return emsa_pss_verify(m_hash, em, em_bits, salt_len=salt_len)
+
+
 def save_public_key(public: tuple[int, int], path: str | Path) -> None:
     """
     Guarda una clave publica RSA (n, e) en un archivo con formato JSON.
@@ -490,3 +601,21 @@ if __name__ == "__main__":
     print(f"Criptograma OAEP (longitud {len(ct_oaep)} bytes): {ct_oaep.hex()[:32]}...")
     print(f"Mensaje recuperado OAEP: {recuperado_oaep.decode('utf-8')}")
     print(f"Round-trip OAEP exitoso: {recuperado_oaep == mensaje_oaep}")
+
+    print("\n=== Demo Firma y Verificacion RSA-PSS (1024 bits) ===")
+    pub1024_pss, priv1024_pss = generate_keypair(1024)
+    msg_pss = b"Hola PSS"
+    firma_pss = sign(msg_pss, priv1024_pss)
+    valida_pss = verify(msg_pss, firma_pss, pub1024_pss)
+    print(f"Mensaje PSS: {msg_pss.decode('utf-8')}")
+    print(f"Firma PSS (longitud {len(firma_pss)} bytes): {firma_pss.hex()[:32]}...")
+    print(f"Verificacion firma original: {valida_pss}")
+
+    # Alterar 1 bit de la firma
+    firma_alterada = bytes([firma_pss[0] ^ 0x01]) + firma_pss[1:]
+    valida_alterada = verify(msg_pss, firma_alterada, pub1024_pss)
+    print(f"Verificacion firma alterada (1 bit): {valida_alterada}")
+
+    # Verificar mensaje distinto
+    valida_distinto = verify(b"Mensaje distinto", firma_pss, pub1024_pss)
+    print(f"Verificacion mensaje distinto: {valida_distinto}")
