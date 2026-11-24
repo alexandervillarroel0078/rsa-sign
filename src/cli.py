@@ -199,8 +199,8 @@ def main():
     # keygen
     p_keygen = subparsers.add_parser("keygen", help="Generar par de claves RSA")
     p_keygen.add_argument("--bits", type=int, default=1024, help="Tamano del modulo en bits (default 1024)")
-    p_keygen.add_argument("--pub", type=str, help="Archivo donde guardar clave publica (ej: pub.pem)")
-    p_keygen.add_argument("--priv", type=str, help="Archivo donde guardar clave privada (ej: priv.pem)")
+    p_keygen.add_argument("--pub", type=str, help="Archivo JSON donde guardar clave publica (ej: clave_publica.json)")
+    p_keygen.add_argument("--priv", type=str, help="Archivo JSON donde guardar clave privada (ej: clave_privada.json)")
 
     # encrypt
     p_enc = subparsers.add_parser("encrypt", help="Cifrar mensaje con RSA-OAEP")

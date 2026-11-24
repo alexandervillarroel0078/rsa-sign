@@ -32,6 +32,10 @@ from .attacks import (
 )
 from .sha256 import sha256_hex
 
+# rsa.save_*_key / load_*_key usan JSON con n, e, d en hexadecimal (no PEM).
+KEY_EXT = ".json"
+KEY_FILETYPES = [("Archivos JSON", "*.json"), ("Todos", "*.*")]
+
 
 class RSAGuiApp:
     def __init__(self, root):
@@ -99,9 +103,9 @@ class RSAGuiApp:
 
         f_bottom = ttk.Frame(self.tab1)
         f_bottom.pack(fill="x", padx=10, pady=5)
-        btn_save_pub = ttk.Button(f_bottom, text="Guardar Clave Publica (.pem)", command=self._guardar_pub_tab1)
+        btn_save_pub = ttk.Button(f_bottom, text="Guardar Clave Publica (.json)", command=self._guardar_pub_tab1)
         btn_save_pub.pack(side="left", padx=5)
-        btn_save_priv = ttk.Button(f_bottom, text="Guardar Clave Privada (.pem)", command=self._guardar_priv_tab1)
+        btn_save_priv = ttk.Button(f_bottom, text="Guardar Clave Privada (.json)", command=self._guardar_priv_tab1)
         btn_save_priv.pack(side="left", padx=5)
 
     def _generar_claves(self):
@@ -132,7 +136,12 @@ class RSAGuiApp:
         if not self.current_pub:
             messagebox.showwarning("Atencion", "No hay una clave publica generada o cargada.")
             return
-        path = filedialog.asksaveasfilename(defaultextension=".pem", filetypes=[("Archivos PEM", "*.pem"), ("Todos", "*.*")])
+        path = filedialog.asksaveasfilename(
+            title="Guardar clave publica",
+            initialfile="clave_publica",
+            defaultextension=KEY_EXT,
+            filetypes=KEY_FILETYPES,
+        )
         if path:
             save_public_key(self.current_pub, path)
             messagebox.showinfo("Guardado", f"Clave publica guardada en:\n{path}")
@@ -141,13 +150,23 @@ class RSAGuiApp:
         if not self.current_priv:
             messagebox.showwarning("Atencion", "No hay una clave privada generada o cargada.")
             return
-        path = filedialog.asksaveasfilename(defaultextension=".pem", filetypes=[("Archivos PEM", "*.pem"), ("Todos", "*.*")])
+        path = filedialog.asksaveasfilename(
+            title="Guardar clave privada",
+            initialfile="clave_privada",
+            defaultextension=KEY_EXT,
+            filetypes=KEY_FILETYPES,
+        )
         if path:
             save_private_key(self.current_priv, path)
             messagebox.showinfo("Guardado", f"Clave privada guardada en:\n{path}")
 
     def _cargar_pub_tab1(self):
-        path = filedialog.askopenfilename(filetypes=[("Archivos PEM", "*.pem"), ("Todos", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Cargar clave publica",
+            initialfile="clave_publica" + KEY_EXT,
+            defaultextension=KEY_EXT,
+            filetypes=KEY_FILETYPES,
+        )
         if path:
             try:
                 self.current_pub = load_public_key(path)
@@ -157,7 +176,12 @@ class RSAGuiApp:
                 messagebox.showerror("Error", f"Error al cargar clave publica: {e}")
 
     def _cargar_priv_tab1(self):
-        path = filedialog.askopenfilename(filetypes=[("Archivos PEM", "*.pem"), ("Todos", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Cargar clave privada",
+            initialfile="clave_privada" + KEY_EXT,
+            defaultextension=KEY_EXT,
+            filetypes=KEY_FILETYPES,
+        )
         if path:
             try:
                 self.current_priv = load_private_key(path)
