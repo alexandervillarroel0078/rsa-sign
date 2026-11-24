@@ -7,7 +7,7 @@ Generado automaticamente por `python benchmark.py`. No editar a mano: volver a e
 - CPU: AMD Ryzen 5 7535HS with Radeon Graphics (12 nucleos logicos; el benchmark usa 1)
 - Sistema: Windows 11 (build 26100)
 - Python: CPython 3.10.11
-- Fecha: 2026-11-24 09:29
+- Fecha: 2026-11-24 10:22
 
 Metodo: `time.perf_counter`, desviacion estandar muestral (n-1). Los tiempos de
 generacion de claves varian mucho porque la busqueda de primos es aleatoria.
@@ -16,26 +16,26 @@ generacion de claves varian mucho porque la busqueda de primos es aleatoria.
 
 | Operacion | 1024 bits (Media ± Std) | 2048 bits (Media ± Std) | 3072 bits (Media ± Std) | 4096 bits (Media ± Std) | Factor (4096b / 1024b) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Generacion Claves** | 119.241 ms ± 37.993 ms | 911.767 ms ± 310.416 ms | 5.480 s ± 3.058 s | 8.022 s ± 2.584 s | **67.27x** |
-| **Cifrado OAEP** | 1.094 ms ± 94.53 us | 2.565 ms ± 701.03 us | 4.920 ms ± 1.409 ms | 6.066 ms ± 726.42 us | **5.55x** |
-| **Descifrado OAEP** | 3.465 ms ± 502.37 us | 12.864 ms ± 1.154 ms | 38.441 ms ± 4.814 ms | 75.031 ms ± 2.851 ms | **21.65x** |
-| **Descifrado OAEP sin CRT** | 7.408 ms ± 924.94 us | 31.780 ms ± 2.030 ms | 108.465 ms ± 2.869 ms | 231.030 ms ± 3.614 ms | **31.19x** |
-| **Firma PSS** | 3.736 ms ± 618.93 us | 10.782 ms ± 174.87 us | 39.093 ms ± 8.336 ms | 71.688 ms ± 3.002 ms | **19.19x** |
-| **Firma PSS sin CRT** | 7.114 ms ± 761.77 us | 29.284 ms ± 988.75 us | 106.767 ms ± 5.231 ms | 232.464 ms ± 5.724 ms | **32.68x** |
-| **Verificacion PSS** | 1.410 ms ± 363.18 us | 1.728 ms ± 95.52 us | 3.399 ms ± 1.458 ms | 5.090 ms ± 1.215 ms | **3.61x** |
+| **Generacion Claves** | 121.295 ms ± 34.368 ms | 863.037 ms ± 381.996 ms | 3.175 s ± 1.095 s | 5.934 s ± 2.039 s | **48.92x** |
+| **Cifrado OAEP** | 979.61 us ± 38.34 us | 1.937 ms ± 19.15 us | 2.959 ms ± 73.59 us | 4.039 ms ± 50.67 us | **4.12x** |
+| **Descifrado OAEP** | 2.943 ms ± 172.80 us | 11.080 ms ± 396.01 us | 28.695 ms ± 770.01 us | 59.151 ms ± 709.20 us | **20.10x** |
+| **Descifrado OAEP sin CRT** | 5.559 ms ± 358.68 us | 28.978 ms ± 376.71 us | 86.455 ms ± 1.021 ms | 192.568 ms ± 986.32 us | **34.64x** |
+| **Firma PSS** | 2.904 ms ± 258.74 us | 10.476 ms ± 255.24 us | 27.628 ms ± 306.19 us | 60.081 ms ± 2.617 ms | **20.69x** |
+| **Firma PSS sin CRT** | 5.325 ms ± 290.54 us | 29.289 ms ± 601.03 us | 87.021 ms ± 2.466 ms | 191.827 ms ± 1.586 ms | **36.02x** |
+| **Verificacion PSS** | 1.036 ms ± 248.36 us | 1.858 ms ± 250.16 us | 2.454 ms ± 126.30 us | 3.377 ms ± 240.55 us | **3.26x** |
 
 ### Aceleracion por CRT (Teorema Chino del Resto)
 
 | Bits | Operacion | Sin CRT (media) | Con CRT (media) | Speedup |
 | ---: | :--- | ---: | ---: | ---: |
-| 1024 | Descifrado OAEP | 7.408 ms | 3.465 ms | **2.14x** |
-| 1024 | Firma PSS | 7.114 ms | 3.736 ms | **1.90x** |
-| 2048 | Descifrado OAEP | 31.780 ms | 12.864 ms | **2.47x** |
-| 2048 | Firma PSS | 29.284 ms | 10.782 ms | **2.72x** |
-| 3072 | Descifrado OAEP | 108.465 ms | 38.441 ms | **2.82x** |
-| 3072 | Firma PSS | 106.767 ms | 39.093 ms | **2.73x** |
-| 4096 | Descifrado OAEP | 231.030 ms | 75.031 ms | **3.08x** |
-| 4096 | Firma PSS | 232.464 ms | 71.688 ms | **3.24x** |
+| 1024 | Descifrado OAEP | 5.559 ms | 2.943 ms | **1.89x** |
+| 1024 | Firma PSS | 5.325 ms | 2.904 ms | **1.83x** |
+| 2048 | Descifrado OAEP | 28.978 ms | 11.080 ms | **2.62x** |
+| 2048 | Firma PSS | 29.289 ms | 10.476 ms | **2.80x** |
+| 3072 | Descifrado OAEP | 86.455 ms | 28.695 ms | **3.01x** |
+| 3072 | Firma PSS | 87.021 ms | 27.628 ms | **3.15x** |
+| 4096 | Descifrado OAEP | 192.568 ms | 59.151 ms | **3.26x** |
+| 4096 | Firma PSS | 191.827 ms | 60.081 ms | **3.19x** |
 
 ### Detalle por tamano de clave
 
@@ -43,55 +43,55 @@ generacion de claves varian mucho porque la busqueda de primos es aleatoria.
 
 | Operacion | n | Media | Desv. est. | Mediana | Min | Max | ops/s |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Generacion Claves | 10 | 119.241 ms | 37.993 ms | 112.721 ms | 78.195 ms | 201.344 ms | 8.39 |
-| Cifrado OAEP | 10 | 1.094 ms | 94.53 us | 1.044 ms | 1.019 ms | 1.288 ms | 914.41 |
-| Descifrado OAEP | 10 | 3.465 ms | 502.37 us | 3.355 ms | 2.925 ms | 4.147 ms | 288.60 |
-| Descifrado OAEP sin CRT | 10 | 7.408 ms | 924.94 us | 7.190 ms | 6.223 ms | 8.673 ms | 135.00 |
-| Firma PSS | 10 | 3.736 ms | 618.93 us | 3.625 ms | 2.885 ms | 4.799 ms | 267.64 |
-| Firma PSS sin CRT | 10 | 7.114 ms | 761.77 us | 7.353 ms | 5.466 ms | 8.063 ms | 140.57 |
-| Verificacion PSS | 10 | 1.410 ms | 363.18 us | 1.400 ms | 968.20 us | 1.869 ms | 708.99 |
+| Generacion Claves | 10 | 121.295 ms | 34.368 ms | 125.860 ms | 71.824 ms | 201.056 ms | 8.24 |
+| Cifrado OAEP | 10 | 979.61 us | 38.34 us | 967.10 us | 944.40 us | 1.067 ms | 1020.81 |
+| Descifrado OAEP | 10 | 2.943 ms | 172.80 us | 2.880 ms | 2.768 ms | 3.327 ms | 339.78 |
+| Descifrado OAEP sin CRT | 10 | 5.559 ms | 358.68 us | 5.555 ms | 5.135 ms | 6.095 ms | 179.88 |
+| Firma PSS | 10 | 2.904 ms | 258.74 us | 2.784 ms | 2.716 ms | 3.523 ms | 344.33 |
+| Firma PSS sin CRT | 10 | 5.325 ms | 290.54 us | 5.205 ms | 5.096 ms | 5.913 ms | 187.79 |
+| Verificacion PSS | 10 | 1.036 ms | 248.36 us | 951.45 us | 931.40 us | 1.739 ms | 965.33 |
 
 #### 2048 bits
 
 | Operacion | n | Media | Desv. est. | Mediana | Min | Max | ops/s |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Generacion Claves | 10 | 911.767 ms | 310.416 ms | 826.818 ms | 526.872 ms | 1.470 s | 1.10 |
-| Cifrado OAEP | 10 | 2.565 ms | 701.03 us | 2.201 ms | 1.901 ms | 3.715 ms | 389.91 |
-| Descifrado OAEP | 10 | 12.864 ms | 1.154 ms | 12.799 ms | 11.046 ms | 14.916 ms | 77.74 |
-| Descifrado OAEP sin CRT | 10 | 31.780 ms | 2.030 ms | 32.118 ms | 28.897 ms | 34.947 ms | 31.47 |
-| Firma PSS | 10 | 10.782 ms | 174.87 us | 10.795 ms | 10.562 ms | 11.123 ms | 92.74 |
-| Firma PSS sin CRT | 10 | 29.284 ms | 988.75 us | 28.879 ms | 28.517 ms | 31.752 ms | 34.15 |
-| Verificacion PSS | 10 | 1.728 ms | 95.52 us | 1.693 ms | 1.631 ms | 1.915 ms | 578.85 |
+| Generacion Claves | 10 | 863.037 ms | 381.996 ms | 792.342 ms | 461.927 ms | 1.775 s | 1.16 |
+| Cifrado OAEP | 10 | 1.937 ms | 19.15 us | 1.933 ms | 1.915 ms | 1.985 ms | 516.28 |
+| Descifrado OAEP | 10 | 11.080 ms | 396.01 us | 10.922 ms | 10.634 ms | 11.624 ms | 90.25 |
+| Descifrado OAEP sin CRT | 10 | 28.978 ms | 376.71 us | 28.810 ms | 28.760 ms | 29.946 ms | 34.51 |
+| Firma PSS | 10 | 10.476 ms | 255.24 us | 10.387 ms | 10.265 ms | 11.088 ms | 95.46 |
+| Firma PSS sin CRT | 10 | 29.289 ms | 601.03 us | 29.004 ms | 28.919 ms | 30.823 ms | 34.14 |
+| Verificacion PSS | 10 | 1.858 ms | 250.16 us | 1.751 ms | 1.648 ms | 2.333 ms | 538.36 |
 
 #### 3072 bits
 
 | Operacion | n | Media | Desv. est. | Mediana | Min | Max | ops/s |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Generacion Claves | 5 | 5.480 s | 3.058 s | 4.183 s | 2.683 s | 9.054 s | 0.18 |
-| Cifrado OAEP | 10 | 4.920 ms | 1.409 ms | 4.362 ms | 3.557 ms | 7.128 ms | 203.25 |
-| Descifrado OAEP | 10 | 38.441 ms | 4.814 ms | 37.306 ms | 32.337 ms | 48.544 ms | 26.01 |
-| Descifrado OAEP sin CRT | 10 | 108.465 ms | 2.869 ms | 108.560 ms | 103.423 ms | 112.439 ms | 9.22 |
-| Firma PSS | 10 | 39.093 ms | 8.336 ms | 35.509 ms | 29.938 ms | 54.180 ms | 25.58 |
-| Firma PSS sin CRT | 10 | 106.767 ms | 5.231 ms | 107.657 ms | 99.712 ms | 117.078 ms | 9.37 |
-| Verificacion PSS | 10 | 3.399 ms | 1.458 ms | 2.596 ms | 2.359 ms | 6.081 ms | 294.18 |
+| Generacion Claves | 5 | 3.175 s | 1.095 s | 2.685 s | 2.487 s | 5.096 s | 0.31 |
+| Cifrado OAEP | 10 | 2.959 ms | 73.59 us | 2.937 ms | 2.894 ms | 3.152 ms | 337.90 |
+| Descifrado OAEP | 10 | 28.695 ms | 770.01 us | 28.639 ms | 27.647 ms | 29.776 ms | 34.85 |
+| Descifrado OAEP sin CRT | 10 | 86.455 ms | 1.021 ms | 86.698 ms | 84.583 ms | 87.754 ms | 11.57 |
+| Firma PSS | 10 | 27.628 ms | 306.19 us | 27.579 ms | 27.237 ms | 28.207 ms | 36.19 |
+| Firma PSS sin CRT | 10 | 87.021 ms | 2.466 ms | 86.198 ms | 85.256 ms | 93.589 ms | 11.49 |
+| Verificacion PSS | 10 | 2.454 ms | 126.30 us | 2.410 ms | 2.352 ms | 2.785 ms | 407.55 |
 
 #### 4096 bits
 
 | Operacion | n | Media | Desv. est. | Mediana | Min | Max | ops/s |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Generacion Claves | 5 | 8.022 s | 2.584 s | 8.034 s | 5.348 s | 11.655 s | 0.12 |
-| Cifrado OAEP | 10 | 6.066 ms | 726.42 us | 6.371 ms | 4.768 ms | 6.802 ms | 164.84 |
-| Descifrado OAEP | 10 | 75.031 ms | 2.851 ms | 76.307 ms | 69.593 ms | 78.208 ms | 13.33 |
-| Descifrado OAEP sin CRT | 10 | 231.030 ms | 3.614 ms | 230.979 ms | 224.386 ms | 236.247 ms | 4.33 |
-| Firma PSS | 10 | 71.688 ms | 3.002 ms | 71.867 ms | 67.600 ms | 75.868 ms | 13.95 |
-| Firma PSS sin CRT | 10 | 232.464 ms | 5.724 ms | 232.214 ms | 223.053 ms | 242.605 ms | 4.30 |
-| Verificacion PSS | 10 | 5.090 ms | 1.215 ms | 5.926 ms | 3.273 ms | 6.114 ms | 196.47 |
+| Generacion Claves | 5 | 5.934 s | 2.039 s | 5.286 s | 3.467 s | 8.706 s | 0.17 |
+| Cifrado OAEP | 10 | 4.039 ms | 50.67 us | 4.023 ms | 3.967 ms | 4.144 ms | 247.56 |
+| Descifrado OAEP | 10 | 59.151 ms | 709.20 us | 58.882 ms | 58.527 ms | 60.394 ms | 16.91 |
+| Descifrado OAEP sin CRT | 10 | 192.568 ms | 986.32 us | 192.458 ms | 190.800 ms | 193.917 ms | 5.19 |
+| Firma PSS | 10 | 60.081 ms | 2.617 ms | 59.156 ms | 58.067 ms | 66.615 ms | 16.64 |
+| Firma PSS sin CRT | 10 | 191.827 ms | 1.586 ms | 192.055 ms | 189.911 ms | 193.458 ms | 5.21 |
+| Verificacion PSS | 10 | 3.377 ms | 240.55 us | 3.303 ms | 3.187 ms | 3.939 ms | 296.13 |
 
 ### SHA-256 propio frente a hashlib (referencia)
 
 | Entrada | n | Propio (media ± std) | MiB/s propio | hashlib (media) | MiB/s hashlib | Veces mas lento | Mismo resumen |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
-| 64 B | 10 | 499.58 us ± 103.80 us | 0.122 | 1.98 us | 30.8 | 252x | si |
-| 1 KiB | 10 | 3.645 ms ± 983.24 us | 0.268 | 1.39 us | 704.1 | 2,628x | si |
-| 1 MiB | 3 | 3.539 s ± 25.388 ms | 0.283 | 513.76 us | 1946.4 | 6,889x | si |
+| 64 B | 10 | 382.48 us ± 109.05 us | 0.160 | 0.98 us | 62.2 | 389x | si |
+| 1 KiB | 10 | 2.553 ms ± 154.87 us | 0.383 | 1.26 us | 774.4 | 2,024x | si |
+| 1 MiB | 3 | 2.279 s ± 28.012 ms | 0.439 | 481.10 us | 2078.6 | 4,737x | si |
 
