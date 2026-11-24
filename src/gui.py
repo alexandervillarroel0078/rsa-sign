@@ -95,7 +95,9 @@ def describir_privada(priv) -> str:
 
 
 def texto_firma_ejemplo() -> str:
-    return f"Yo, {leer_autores()[0]}, firmo electronicamente este documento."
+    # Formato de AUTORES: "Apellidos Nombres, Registro"; el texto usa solo el nombre.
+    nombre = leer_autores()[0].split(",")[0].strip() or AUTOR_POR_DEFECTO
+    return f"Yo, {nombre}, firmo electronicamente este documento."
 
 
 class RSAGuiApp:
