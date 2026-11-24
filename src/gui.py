@@ -184,8 +184,10 @@ class RSAGuiApp:
         )
         if path:
             try:
+                # El nucleo devuelve la privada como tupla (n, d). Solo se guarda
+                # esa tupla (la usan Descifrado y Firma); la publica (n, e) se
+                # carga aparte y no se deriva de aqui.
                 self.current_priv = load_private_key(path)
-                self.current_pub = self.current_priv.public_key()
                 self.txt_keys.delete("1.0", "end")
                 self.txt_keys.insert("end", f"[+] Clave privada cargada desde {path}:\nn: {self.current_priv[0]}\nd: {self.current_priv[1]}\n")
             except Exception as e:

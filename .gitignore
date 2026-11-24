@@ -18,3 +18,16 @@ informe*.md
 prompt_CU*.md
 *.log
 rsa_suite.log
+
+# Claves de prueba
+PruebaGuiInterfaz/
+clave_*
+
+# Diagramas locales
+Diagramas.eap
+Diagramas.ldb
+diagramas_png/
+
+# Python
+__pycache__/
+*.pyc
