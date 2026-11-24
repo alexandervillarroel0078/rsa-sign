@@ -14,20 +14,93 @@ from pathlib import Path
 try:
     from .mathcore import gcd, modexp, modinv
     from .primes import generate_prime
-    from .oaep import oaep_decode, oaep_encode
+    from .oaep import DECRYPTION_ERROR, oaep_decode, oaep_encode
     from .pss import emsa_pss_encode, emsa_pss_verify
     from .sha256 import sha256
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.mathcore import gcd, modexp, modinv
     from src.primes import generate_prime
-    from src.oaep import oaep_decode, oaep_encode
+    from src.oaep import DECRYPTION_ERROR, oaep_decode, oaep_encode
     from src.pss import emsa_pss_encode, emsa_pss_verify
     from src.sha256 import sha256
 
 
 # Exponente publico estandar de Fermat F4 = 2^16 + 1
 E_DEFAULT: int = 65537
+
+# Tamano minimo de modulo aceptado por defecto al usar una clave publica.
+MIN_PUBLIC_BITS: int = 1024
+
+
+def _es_entero(x) -> bool:
+    """True si x es int y no bool (bool es subclase de int en Python)."""
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def validate_public_key(public: tuple[int, int], allow_weak: bool = False) -> tuple[int, int]:
+    """
+    Valida una clave publica RSA (n, e) antes de usarla (principio Zero-Trust).
+
+    Reglas:
+    - n entero positivo e impar (producto de dos primos impares).
+    - e impar y 3 <= e < n. Esto rechaza e = 1, con el que s^e = s y cualquiera
+      podria "firmar" sin la clave privada.
+    - n con al menos MIN_PUBLIC_BITS bits, salvo allow_weak=True (solo tests y
+      demostraciones de ataque).
+
+    :return: (n, e) validados.
+    :raises TypeError: si no es una tupla de dos enteros.
+    :raises ValueError: si la clave no cumple las reglas.
+    """
+    if not (isinstance(public, tuple) and len(public) == 2):
+        raise TypeError("La clave publica debe ser una tupla (n, e).")
+    n, e = public
+    if not (_es_entero(n) and _es_entero(e)):
+        raise TypeError("Los componentes de la clave publica deben ser enteros.")
+    if n <= 0 or n % 2 == 0:
+        raise ValueError("Clave publica invalida: n debe ser un entero positivo impar.")
+    if e % 2 == 0 or e < 3 or e >= n:
+        raise ValueError("Clave publica invalida: e debe ser impar y cumplir 3 <= e < n.")
+    if not allow_weak and n.bit_length() < MIN_PUBLIC_BITS:
+        raise ValueError(
+            f"Clave publica debil: n tiene {n.bit_length()} bits y se requieren al menos "
+            f"{MIN_PUBLIC_BITS}. (allow_weak=True solo para pruebas o demostraciones)."
+        )
+    return n, e
+
+
+def _validate_private_key(private: tuple[int, int]) -> tuple[int, int]:
+    """
+    Comprobaciones basicas de una clave privada (n, d): tupla de dos enteros
+    positivos. Centraliza la validacion que antes estaba copiada en cada funcion.
+
+    :raises TypeError: si no es una tupla de dos enteros.
+    :raises ValueError: si algun componente no es positivo.
+    """
+    if not (isinstance(private, tuple) and len(private) == 2):
+        raise TypeError("La clave privada debe ser una tupla (n, d).")
+    n, d = private
+    if not (_es_entero(n) and _es_entero(d)):
+        raise TypeError("Los componentes de la clave privada deben ser enteros.")
+    if n <= 0 or d <= 0:
+        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+    return n, d
+
+
+def public_key_fingerprint(public: tuple[int, int]) -> str:
+    """
+    Huella de una clave publica: SHA-256 (implementacion propia) de n || e.
+
+    n se codifica en big-endian con longitud fija k = ceil(bits(n) / 8) y e en
+    big-endian con la longitud minima. Sirve para que dos personas comprueben
+    por un canal aparte que tienen la misma clave publica.
+
+    :return: huella en hexadecimal (64 caracteres).
+    """
+    n, e = validate_public_key(public, allow_weak=True)
+    k = (n.bit_length() + 7) // 8
+    return sha256(n.to_bytes(k, "big") + e.to_bytes((e.bit_length() + 7) // 8, "big")).hex()
 
 
 def bytes_to_int(b: bytes) -> int:
@@ -104,6 +177,11 @@ def generate_keypair(bits: int) -> tuple[tuple[int, int], tuple[int, int]]:
             if gcd(e, q - 1) != 1:
                 continue
 
+            # FIPS 186-4 (B.3.1): |p - q| > 2^(bits/2 - 100). Si p y q fueran
+            # demasiado cercanos, la factorizacion de Fermat romperia n.
+            if abs(p - q) <= (1 << (half_bits - 100)):
+                continue
+
             # Modulo RSA: n = p * q
             n = p * q
 
@@ -134,9 +212,14 @@ def generate_keypair(bits: int) -> tuple[tuple[int, int], tuple[int, int]]:
     return (public_key, private_key)
 
 
-def encrypt(msg: bytes, public: tuple[int, int]) -> bytes:
+def encrypt(msg: bytes, public: tuple[int, int], allow_weak: bool = False) -> bytes:
     """
-    Cifra un mensaje utilizando la clave publica RSA (n, e).
+    RSA "textbook" (sin relleno): SOLO DEMOSTRACION, INSEGURO.
+
+    Es determinista (mismo mensaje -> mismo criptograma), maleable
+    (E(a)*E(b) = E(a*b) mod n) y, con e pequeno y mensajes cortos, se invierte
+    con una raiz entera. Se conserva unicamente para las demostraciones de
+    ataque. Para cifrar de verdad use encrypt_oaep.
 
     Convierte el mensaje a entero m (big-endian), valida que 0 <= m < n y que su
     longitud no exceda la capacidad del modulo, y calcula c = modexp(m, e, n).
@@ -144,20 +227,14 @@ def encrypt(msg: bytes, public: tuple[int, int]) -> bytes:
 
     :param msg: Mensaje en bytes a cifrar.
     :param public: Tupla (n, e) con el modulo y exponente publico.
+    :param allow_weak: Acepta modulos de menos de MIN_PUBLIC_BITS (solo demos/tests).
     :return: Criptograma en bytes con longitud fija.
     :raises TypeError: Si msg no es bytes o la clave publica no es tupla de enteros.
     :raises ValueError: Si el mensaje es demasiado largo para el modulo o clave invalida.
     """
     if not isinstance(msg, (bytes, bytearray)):
         raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
-    if not (isinstance(public, tuple) and len(public) == 2):
-        raise TypeError("La clave publica debe ser una tupla (n, e).")
-
-    n, e = public
-    if not (isinstance(n, int) and isinstance(e, int) and not isinstance(n, bool) and not isinstance(e, bool)):
-        raise TypeError("Los componentes de la clave publica deben ser enteros.")
-    if n <= 0 or e <= 0:
-        raise ValueError("Los componentes de la clave publica deben ser enteros positivos.")
+    n, e = validate_public_key(public, allow_weak=allow_weak)
 
     max_bytes = n.bit_length() // 8
     m = bytes_to_int(msg)
@@ -174,29 +251,29 @@ def encrypt(msg: bytes, public: tuple[int, int]) -> bytes:
     return int_to_bytes(c, length=ct_len)
 
 
-def decrypt(ct: bytes, private: tuple[int, int]) -> bytes:
+def decrypt(ct: bytes, private: tuple[int, int], length: int | None = None) -> bytes:
     """
-    Descifra un criptograma utilizando la clave privada RSA (n, d).
+    RSA "textbook" (sin relleno): SOLO DEMOSTRACION, INSEGURO. Ver encrypt().
 
-    Convierte el criptograma a entero c, calcula m = modexp(c, d, n), y devuelve
-    el mensaje original en bytes sin padding adicional.
+    Convierte el criptograma a entero c y calcula m = modexp(c, d, n).
+
+    Sin relleno, el entero m no guarda cuantos bytes 0x00 tenia el mensaje al
+    principio. Por eso:
+    - length=None: devuelve la representacion minima de m (se pierden los
+      ceros iniciales; b"\\x00\\x00ABC" vuelve como b"ABC").
+    - length=L: devuelve exactamente L bytes (I2OSP de RFC 8017), recuperando
+      los ceros iniciales. Use L = len(mensaje original) o L = k (bytes de n).
 
     :param ct: Criptograma en bytes.
     :param private: Tupla (n, d) con el modulo y exponente privado.
+    :param length: Longitud de salida en bytes (opcional).
     :return: Mensaje original en bytes.
     :raises TypeError: Si ct no es bytes o la clave privada no es tupla de enteros.
     :raises ValueError: Si la clave privada contiene valores invalidos o c >= n.
     """
     if not isinstance(ct, (bytes, bytearray)):
         raise TypeError("El criptograma debe ser de tipo bytes o bytearray.")
-    if not (isinstance(private, tuple) and len(private) == 2):
-        raise TypeError("La clave privada debe ser una tupla (n, d).")
-
-    n, d = private
-    if not (isinstance(n, int) and isinstance(d, int) and not isinstance(n, bool) and not isinstance(d, bool)):
-        raise TypeError("Los componentes de la clave privada deben ser enteros.")
-    if n <= 0 or d <= 0:
-        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+    n, d = _validate_private_key(private)
 
     c = bytes_to_int(ct)
     if c >= n:
@@ -205,11 +282,14 @@ def decrypt(ct: bytes, private: tuple[int, int]) -> bytes:
     # Exponenciacion modular: m = c^d (mod n)
     m = modexp(c, d, n)
 
-    # Convertir entero m a bytes sin padding adicional
-    return int_to_bytes(m)
+    # Convertir entero m a bytes: longitud minima o fija si se indico
+    if length is None:
+        return int_to_bytes(m)
+    return int_to_bytes(m, length=length)
 
 
-def encrypt_oaep(msg: bytes, public: tuple[int, int], label: bytes = b"") -> bytes:
+def encrypt_oaep(msg: bytes, public: tuple[int, int], label: bytes = b"",
+                 allow_weak: bool = False) -> bytes:
     """
     Cifra un mensaje utilizando relleno OAEP (SHA-256) y clave publica RSA (n, e).
 
@@ -220,25 +300,25 @@ def encrypt_oaep(msg: bytes, public: tuple[int, int], label: bytes = b"") -> byt
     :param msg: Mensaje en bytes a cifrar.
     :param public: Tupla (n, e) con el modulo y exponente publico.
     :param label: Etiqueta opcional asociada.
+    :param allow_weak: Acepta modulos de menos de MIN_PUBLIC_BITS (solo demos/tests).
     :return: Criptograma en bytes de longitud k.
     :raises TypeError: Si los parametros no tienen los tipos esperados.
-    :raises ValueError: Si el modulo es insuficiente o el mensaje excede la capacidad.
+    :raises ValueError: Si la clave es invalida, el modulo es insuficiente o el mensaje
+                        excede la capacidad.
     """
     if not isinstance(msg, (bytes, bytearray)):
         raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
     if not isinstance(label, (bytes, bytearray)):
         raise TypeError("La etiqueta debe ser de tipo bytes o bytearray.")
-    if not (isinstance(public, tuple) and len(public) == 2):
-        raise TypeError("La clave publica debe ser una tupla (n, e).")
-
-    n, e = public
-    if not (isinstance(n, int) and isinstance(e, int) and not isinstance(n, bool) and not isinstance(e, bool)):
-        raise TypeError("Los componentes de la clave publica deben ser enteros.")
-    if n <= 0 or e <= 0:
-        raise ValueError("Los componentes de la clave publica deben ser enteros positivos.")
+    n, e = validate_public_key(public, allow_weak=allow_weak)
 
     k = (n.bit_length() + 7) // 8
     max_len = k - 2 * 32 - 2
+    if max_len < 0:
+        raise ValueError(
+            f"Clave de {n.bit_length()} bits demasiado pequena para OAEP-SHA256: "
+            f"se requieren al menos {8 * (2 * 32 + 1) + 1} bits (k >= 66 bytes)."
+        )
     if len(msg) > max_len:
         raise ValueError(
             f"Mensaje demasiado largo para OAEP-SHA256: {len(msg)} > {max_len} bytes."
@@ -255,35 +335,32 @@ def decrypt_oaep(ct: bytes, private: tuple[int, int], label: bytes = b"") -> byt
     Descifra un criptograma con relleno OAEP (SHA-256) y clave privada RSA (n, d).
 
     Verifica c < n, calcula m = modexp(c, d, n), convierte m a bloque EM de k bytes,
-    y aplica oaep_decode(em, k, label). Lanza ValueError si el relleno o etiqueta es invalido.
+    y aplica oaep_decode(em, k, label).
+
+    Todos los fallos (longitud, c >= n, relleno, etiqueta) lanzan el MISMO
+    ValueError("decryption error"): distinguir la causa daria a un atacante un
+    oraculo de relleno (ataque de Manger / Bleichenbacher).
 
     :param ct: Criptograma en bytes de longitud k.
     :param private: Tupla (n, d) con el modulo y exponente privado.
     :param label: Etiqueta opcional asociada.
     :return: Mensaje original en bytes.
     :raises TypeError: Si los parametros no tienen los tipos esperados.
-    :raises ValueError: Si c >= n, longitud invalida o falla la decodificacion OAEP.
+    :raises ValueError: "decryption error" ante cualquier fallo de descifrado.
     """
     if not isinstance(ct, (bytes, bytearray)):
         raise TypeError("El criptograma debe ser de tipo bytes o bytearray.")
     if not isinstance(label, (bytes, bytearray)):
         raise TypeError("La etiqueta debe ser de tipo bytes o bytearray.")
-    if not (isinstance(private, tuple) and len(private) == 2):
-        raise TypeError("La clave privada debe ser una tupla (n, d).")
-
-    n, d = private
-    if not (isinstance(n, int) and isinstance(d, int) and not isinstance(n, bool) and not isinstance(d, bool)):
-        raise TypeError("Los componentes de la clave privada deben ser enteros.")
-    if n <= 0 or d <= 0:
-        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+    n, d = _validate_private_key(private)
 
     k = (n.bit_length() + 7) // 8
     if len(ct) != k:
-        raise ValueError(f"Longitud de criptograma incorrecta: {len(ct)} != {k}.")
+        raise ValueError(DECRYPTION_ERROR)
 
     c = bytes_to_int(ct)
     if c >= n:
-        raise ValueError("El criptograma es invalido para el modulo (c >= n).")
+        raise ValueError(DECRYPTION_ERROR)
 
     m = modexp(c, d, n)
     em = int_to_bytes(m, length=k)
@@ -294,9 +371,7 @@ def sign(msg: bytes, private: tuple[int, int], salt_len: int = 32) -> bytes:
     """
     Firma un mensaje utilizando el esquema RSA-PSS con SHA-256 (RFC 8017).
 
-    Aplica EMSA-PSS-SHA256 al mensaje con longitud em_bits = n.bit_length() - 1,
-    convierte el bloque EM resultante a entero m, y calcula la firma s = m^d (mod n).
-    Devuelve la firma con longitud fija de k bytes, igual al tamano del modulo n.
+    Calcula mHash = SHA-256(msg) y delega en sign_hash.
 
     :param msg: Mensaje en bytes a firmar.
     :param private: Tupla (n, d) con la clave privada RSA.
@@ -307,23 +382,31 @@ def sign(msg: bytes, private: tuple[int, int], salt_len: int = 32) -> bytes:
     """
     if not isinstance(msg, (bytes, bytearray)):
         raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
-    if not (isinstance(private, tuple) and len(private) == 2):
-        raise TypeError("La clave privada debe ser una tupla (n, d).")
+    return sign_hash(sha256(bytes(msg)), private, salt_len=salt_len)
 
-    n, d = private
-    if not (isinstance(n, int) and isinstance(d, int) and not isinstance(n, bool) and not isinstance(d, bool)):
-        raise TypeError("Los componentes de la clave privada deben ser enteros.")
-    if n <= 0 or d <= 0:
-        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+
+def sign_hash(m_hash: bytes, private: tuple[int, int], salt_len: int = 32) -> bytes:
+    """
+    Firma RSA-PSS a partir del resumen SHA-256 ya calculado (32 bytes).
+
+    Permite firmar archivos grandes resumidos por bloques con sha256_file.
+    Aplica EMSA-PSS-SHA256 con em_bits = n.bit_length() - 1, convierte EM a
+    entero m y calcula s = m^d (mod n). Devuelve k bytes.
+    """
+    if not isinstance(m_hash, (bytes, bytearray)) or len(m_hash) != 32:
+        raise TypeError("m_hash debe ser un resumen SHA-256 de 32 bytes.")
+    n, d = _validate_private_key(private)
 
     k = (n.bit_length() + 7) // 8
     em_bits = n.bit_length() - 1
-
-    # Resumen criptografico del mensaje con SHA-256
-    m_hash = sha256(bytes(msg))
+    if (em_bits + 7) // 8 < 32 + salt_len + 2:
+        raise ValueError(
+            f"Clave de {n.bit_length()} bits demasiado pequena para PSS-SHA256 con salt de "
+            f"{salt_len} bytes: se requieren al menos {8 * (32 + salt_len + 1) + 2} bits."
+        )
 
     # Codificacion EMSA-PSS
-    em = emsa_pss_encode(m_hash, em_bits, salt_len=salt_len)
+    em = emsa_pss_encode(bytes(m_hash), em_bits, salt_len=salt_len)
 
     # Conversion a entero y operacion con clave privada s = m^d (mod n)
     m = bytes_to_int(em)
@@ -333,7 +416,8 @@ def sign(msg: bytes, private: tuple[int, int], salt_len: int = 32) -> bytes:
     return int_to_bytes(s, length=k)
 
 
-def verify(msg: bytes, sig: bytes, public: tuple[int, int], salt_len: int = 32) -> bool:
+def verify(msg: bytes, sig: bytes, public: tuple[int, int], salt_len: int = 32,
+           allow_weak: bool = False) -> bool:
     """
     Verifica una firma digital RSA-PSS con SHA-256 (RFC 8017).
 
@@ -341,30 +425,39 @@ def verify(msg: bytes, sig: bytes, public: tuple[int, int], salt_len: int = 32) 
     recupera el mensaje codificado m = s^e (mod n), lo formatea a em_len bytes,
     y ejecuta la verificacion EMSA-PSS-SHA256 contra el hash del mensaje.
 
-    NUNCA lanza excepciones por firma invalida (solo por tipos de argumentos invalidos).
+    NUNCA lanza excepciones por firma invalida: devuelve False. Si lanza
+    ValueError cuando la CLAVE PUBLICA es invalida o debil (por ejemplo e = 1,
+    con la que cualquiera fabricaria una firma "valida" sin la clave privada).
 
     :param msg: Mensaje original en bytes.
     :param sig: Firma en bytes a verificar.
     :param public: Tupla (n, e) con la clave publica RSA.
     :param salt_len: Longitud del salt esperado en bytes (por defecto 32).
+    :param allow_weak: Acepta modulos de menos de MIN_PUBLIC_BITS (solo demos/tests).
     :return: True si la firma es valida, False en caso contrario.
     :raises TypeError: Si msg, sig, public o sus componentes no tienen tipos validos.
+    :raises ValueError: Si la clave publica no supera validate_public_key.
     """
     if not isinstance(msg, (bytes, bytearray)):
         raise TypeError("El mensaje debe ser de tipo bytes o bytearray.")
+    return verify_hash(sha256(bytes(msg)), sig, public, salt_len=salt_len, allow_weak=allow_weak)
+
+
+def verify_hash(m_hash: bytes, sig: bytes, public: tuple[int, int], salt_len: int = 32,
+                allow_weak: bool = False) -> bool:
+    """
+    Verifica una firma RSA-PSS a partir del resumen SHA-256 ya calculado.
+
+    Misma semantica que verify(): False ante firma invalida, ValueError ante
+    clave publica invalida o debil.
+    """
+    if not isinstance(m_hash, (bytes, bytearray)) or len(m_hash) != 32:
+        raise TypeError("m_hash debe ser un resumen SHA-256 de 32 bytes.")
     if not isinstance(sig, (bytes, bytearray)):
         raise TypeError("La firma debe ser de tipo bytes o bytearray.")
-    if not (isinstance(public, tuple) and len(public) == 2):
-        raise TypeError("La clave publica debe ser una tupla (n, e).")
-
-    n, e = public
-    if not (isinstance(n, int) and isinstance(e, int) and not isinstance(n, bool) and not isinstance(e, bool)):
-        raise TypeError("Los componentes de la clave publica deben ser enteros.")
     if not isinstance(salt_len, int) or isinstance(salt_len, bool):
         raise TypeError("salt_len debe ser un entero.")
-
-    if n <= 0 or e <= 0:
-        return False
+    n, e = validate_public_key(public, allow_weak=allow_weak)
 
     k = (n.bit_length() + 7) // 8
     # Validar longitud de la firma: debe ser exactamente k bytes
@@ -392,9 +485,8 @@ def verify(msg: bytes, sig: bytes, public: tuple[int, int], salt_len: int = 32) 
     except (ValueError, OverflowError):
         return False
 
-    # Resumen criptografico del mensaje y verificacion EMSA-PSS
-    m_hash = sha256(bytes(msg))
-    return emsa_pss_verify(m_hash, em, em_bits, salt_len=salt_len)
+    # Verificacion EMSA-PSS contra el resumen del mensaje
+    return emsa_pss_verify(bytes(m_hash), em, em_bits, salt_len=salt_len)
 
 
 def save_public_key(public: tuple[int, int], path: str | Path) -> None:
@@ -410,13 +502,8 @@ def save_public_key(public: tuple[int, int], path: str | Path) -> None:
     :raises TypeError: Si los parametros no tienen los tipos esperados.
     :raises ValueError: Si los componentes de la clave no son positivos.
     """
-    if not (isinstance(public, tuple) and len(public) == 2):
-        raise TypeError("La clave publica debe ser una tupla (n, e).")
-    n, e = public
-    if not (isinstance(n, int) and isinstance(e, int) and not isinstance(n, bool) and not isinstance(e, bool)):
-        raise TypeError("Los componentes n y e deben ser enteros.")
-    if n <= 0 or e <= 0:
-        raise ValueError("Los componentes de la clave publica deben ser enteros positivos.")
+    # Al guardar se aceptan claves de demo (512 bits); al cargar se valida el tamano.
+    n, e = validate_public_key(public, allow_weak=True)
 
     data = {
         "n": hex(n),
@@ -426,15 +513,17 @@ def save_public_key(public: tuple[int, int], path: str | Path) -> None:
         json.dump(data, f, indent=2)
 
 
-def load_public_key(path: str | Path) -> tuple[int, int]:
+def load_public_key(path: str | Path, allow_weak: bool = False) -> tuple[int, int]:
     """
     Carga una clave publica RSA (n, e) desde un archivo JSON.
 
     Espera un objeto JSON con campos 'n' y 'e' codificados en hexadecimal con prefijo '0x'.
     Si el archivo no existe, lanza FileNotFoundError.
     Si el JSON esta corrupto, faltan campos o los valores son invalidos, lanza ValueError.
+    La clave cargada pasa por validate_public_key (no se confia en el archivo).
 
     :param path: Ruta del archivo JSON a cargar (str o Path).
+    :param allow_weak: Acepta modulos de menos de MIN_PUBLIC_BITS (solo demos/tests).
     :return: Tupla (n, e) con la clave publica.
     :raises FileNotFoundError: Si el archivo no existe.
     :raises ValueError: Si el archivo esta corrupto o el formato es invalido.
@@ -467,10 +556,7 @@ def load_public_key(path: str | Path) -> tuple[int, int]:
     except (ValueError, TypeError) as err:
         raise ValueError(f"Formato hexadecimal invalido en clave publica: {err}") from err
 
-    if n <= 0 or e <= 0:
-        raise ValueError("Los componentes de la clave publica deben ser enteros positivos.")
-
-    return (n, e)
+    return validate_public_key((n, e), allow_weak=allow_weak)
 
 
 def save_private_key(private: tuple[int, int], path: str | Path) -> None:
@@ -491,13 +577,7 @@ def save_private_key(private: tuple[int, int], path: str | Path) -> None:
     :raises TypeError: Si los parametros no tienen los tipos esperados.
     :raises ValueError: Si los componentes de la clave no son positivos.
     """
-    if not (isinstance(private, tuple) and len(private) == 2):
-        raise TypeError("La clave privada debe ser una tupla (n, d).")
-    n, d = private
-    if not (isinstance(n, int) and isinstance(d, int) and not isinstance(n, bool) and not isinstance(d, bool)):
-        raise TypeError("Los componentes n y d deben ser enteros.")
-    if n <= 0 or d <= 0:
-        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+    n, d = _validate_private_key(private)
 
     data = {
         "n": hex(n),
@@ -571,10 +651,10 @@ if __name__ == "__main__":
     print(f"Exponente privado d: longitud = {d_val.bit_length()} bits")
     print("Generacion de claves completada con exito.")
 
-    print("\n=== Demo Cifrado y Descifrado RSA (512 bits) ===")
+    print("\n=== Demo RSA textbook (512 bits) - SOLO DEMOSTRACION, INSEGURO ===")
     pub512, priv512 = generate_keypair(512)
     mensaje_original = b"Hola RSA"
-    criptograma = encrypt(mensaje_original, pub512)
+    criptograma = encrypt(mensaje_original, pub512, allow_weak=True)
     mensaje_recuperado = decrypt(criptograma, priv512)
 
     print(f"Mensaje original: {mensaje_original.decode('utf-8')}")
@@ -586,7 +666,7 @@ if __name__ == "__main__":
     pub512_demo, priv512_demo = generate_keypair(512)
     # Comprobar comportamiento ante clave de 512 bits (k=64 < 66 bytes requeridos por OAEP-SHA256)
     try:
-        encrypt_oaep(b"Hola OAEP", pub512_demo)
+        encrypt_oaep(b"Hola OAEP", pub512_demo, allow_weak=True)
         error_capturado = False
     except ValueError:
         error_capturado = True

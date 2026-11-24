@@ -114,7 +114,7 @@ class TestRSACipher(unittest.TestCase):
                 resto = secrets.token_bytes(l - 1) if l > 1 else b""
                 m = primer_byte + resto
                 self.assertLess(len(m), (n.bit_length() // 8) - 1)
-                ct = encrypt(m, pub)
+                ct = encrypt(m, pub, allow_weak=True)
                 self.assertEqual(len(ct), (n.bit_length() + 7) // 8)
                 recuperado = decrypt(ct, priv)
                 self.assertEqual(recuperado, m)
@@ -130,7 +130,7 @@ class TestRSACipher(unittest.TestCase):
                 resto = secrets.token_bytes(l - 1) if l > 1 else b""
                 m = primer_byte + resto
                 self.assertLess(len(m), (n.bit_length() // 8) - 1)
-                ct = encrypt(m, pub)
+                ct = encrypt(m, pub, allow_weak=True)
                 self.assertEqual(len(ct), (n.bit_length() + 7) // 8)
                 recuperado = decrypt(ct, priv)
                 self.assertEqual(recuperado, m)
@@ -138,7 +138,7 @@ class TestRSACipher(unittest.TestCase):
     def test_mensaje_vacio(self):
         """encrypt(b"") y decrypt(...) devuelven b""."""
         pub, priv = generate_keypair(512)
-        ct = encrypt(b"", pub)
+        ct = encrypt(b"", pub, allow_weak=True)
         recuperado = decrypt(ct, priv)
         self.assertEqual(recuperado, b"")
 
@@ -151,7 +151,7 @@ class TestRSACipher(unittest.TestCase):
             with self.subTest(longitud=l):
                 msg = b"A" * l
                 with self.assertRaises(ValueError):
-                    encrypt(msg, pub)
+                    encrypt(msg, pub, allow_weak=True)
 
     def test_guardar_cargar_publica(self):
         """save -> load devuelve los mismos (n, e). Usa NamedTemporaryFile y TemporaryDirectory."""
@@ -161,7 +161,7 @@ class TestRSACipher(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             p_dir = Path(tmpdir) / "public_key.json"
             save_public_key(pub, p_dir)
-            cargada = load_public_key(p_dir)
+            cargada = load_public_key(p_dir, allow_weak=True)
             self.assertEqual(cargada, pub)
 
         # 2. Uso con NamedTemporaryFile
@@ -169,7 +169,7 @@ class TestRSACipher(unittest.TestCase):
             p_file = Path(tmpfile.name)
         try:
             save_public_key(pub, p_file)
-            cargada = load_public_key(p_file)
+            cargada = load_public_key(p_file, allow_weak=True)
             self.assertEqual(cargada, pub)
         finally:
             if p_file.exists():

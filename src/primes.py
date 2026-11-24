@@ -106,8 +106,10 @@ def generate_prime(bits: int) -> int:
 
     while True:
         candidato = secrets.randbits(bits)
-        # Forzamos el bit mas alto para que tenga exactamente 'bits' bits.
-        candidato |= 1 << (bits - 1)
+        # Forzamos los DOS bits mas altos: el primo tiene exactamente 'bits'
+        # bits y es >= 1.5 * 2^(bits-1). Asi el producto de dos primos de
+        # b/2 bits siempre tiene exactamente b bits (sin reintentos en keygen).
+        candidato |= 0b11 << (bits - 2)
         # Forzamos el bit menos significativo para que sea impar.
         candidato |= 1
         if is_probable_prime(candidato):

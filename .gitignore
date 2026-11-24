@@ -8,26 +8,17 @@ __pycache__/
 # Claves (nunca versionar)
 *.pem
 *.key
-
-# Claves de prueba
+clave_*
 test_keys/
 *_test_key*
+PruebaGuiInterfaz/
 
 # Archivos de trabajo del equipo (no entregables)
 informe*.md
 prompt_CU*.md
 *.log
-rsa_suite.log
-
-# Claves de prueba
-PruebaGuiInterfaz/
-clave_*
 
 # Diagramas locales
 Diagramas.eap
 Diagramas.ldb
 diagramas_png/
-
-# Python
-__pycache__/
-*.pyc

@@ -22,6 +22,21 @@ HLEN: int = 32
 # Limite teorico maximo de longitud de mascara para MGF1 con SHA-256 (2^32 * 32 bytes)
 MGF1_MAX_LEN: int = (1 << 32) * HLEN
 
+# Mensaje unico para TODO fallo de descifrado (RFC 8017, seccion 7.1.2, nota):
+# si el error dijera la causa (primer byte, lHash, separador...), un atacante
+# podria usarlo como oraculo de relleno (ataque de Manger) y descifrar sin d.
+DECRYPTION_ERROR: str = "decryption error"
+
+
+def _ct_byte_eq(a: int, b: int) -> int:
+    """
+    Igualdad de dos bytes sin ramas: devuelve 1 si a == b y 0 si no.
+
+    x = a ^ b esta en [0, 255]. Si x == 0, (x - 1) >> 8 = -1 y su bit bajo es 1;
+    si x >= 1, (x - 1) >> 8 = 0.
+    """
+    return ((((a ^ b) - 1) >> 8) & 1)
+
 
 def mgf1(seed: bytes, length: int) -> bytes:
     """
@@ -125,7 +140,15 @@ def oaep_decode(em: bytes, k: int, label: bytes = b"") -> bytes:
     :param label: Etiqueta opcional asociada esperada.
     :return: Mensaje original en bytes.
     :raises TypeError: Si los argumentos no tienen los tipos esperados.
-    :raises ValueError: Si la longitud no coincide, k < 2*HLEN + 2, o el formato es invalido.
+    :raises ValueError: DECRYPTION_ERROR ("decryption error") ante CUALQUIER fallo
+                        (longitud, primer byte, lHash, separador), sin indicar la causa.
+
+    Todas las comprobaciones se calculan siempre y se acumulan en 'malo'
+    (OR de diferencias); la decision se toma una sola vez al final. Asi el
+    recorrido no termina antes segun donde este el error.
+    Limitacion honesta: los enteros y bytes de Python no garantizan tiempo
+    constante a nivel de maquina; esto elimina las diferencias gruesas (salidas
+    tempranas y mensajes distintos), no las microarquitectonicas.
     """
     if not isinstance(em, (bytes, bytearray)):
         raise TypeError("em debe ser de tipo bytes o bytearray.")
@@ -134,53 +157,47 @@ def oaep_decode(em: bytes, k: int, label: bytes = b"") -> bytes:
     if not isinstance(k, int) or isinstance(k, bool):
         raise TypeError("k debe ser un entero.")
 
-    if k < 2 * HLEN + 2:
-        raise ValueError(
-            f"k={k} insuficiente para OAEP con SHA-256: requiere al menos {2 * HLEN + 2} bytes."
-        )
+    # Parametros estructurales (dependen solo de la clave, no del secreto).
+    if k < 2 * HLEN + 2 or len(em) != k:
+        raise ValueError(DECRYPTION_ERROR)
 
-    if len(em) != k:
-        raise ValueError(f"Longitud de em ({len(em)}) no coincide con k ({k}).")
+    # 1. Byte inicial Y: cualquier valor distinto de 0 marca error.
+    malo = em[0]
 
-    # Byte inicial Y debe ser 0x00
-    y = em[0]
-    if y != 0:
-        raise ValueError("Error de decodificacion OAEP: primer byte no es 0x00.")
-
-    # Separar maskedSeed y maskedDB
+    # 2. Separar maskedSeed y maskedDB y quitar las mascaras.
     masked_seed = em[1:1 + HLEN]
     masked_db = em[1 + HLEN:]
-
-    # Recuperar semilla: seed = maskedSeed ^ MGF1(maskedDB, hLen)
     seed_mask = mgf1(masked_db, HLEN)
     seed = bytes(a ^ b for a, b in zip(masked_seed, seed_mask))
-
-    # Recuperar bloque de datos: DB = maskedDB ^ MGF1(seed, k - hLen - 1)
     db_mask = mgf1(seed, k - HLEN - 1)
     db = bytes(a ^ b for a, b in zip(masked_db, db_mask))
 
-    # Extraer lHash esperado e invocar comparacion en tiempo constante
-    l_hash_p = db[:HLEN]
+    # 3. lHash' == lHash, comparado por acumulacion XOR.
     l_hash = sha256(bytes(label))
+    for a, b in zip(db[:HLEN], l_hash):
+        malo |= a ^ b
 
-    diff = 0
-    for a, b in zip(l_hash_p, l_hash):
-        diff |= a ^ b
-    if diff != 0:
-        raise ValueError("Error de decodificacion OAEP: resumen de etiqueta no coincide.")
-
-    # Recorrer DB[hLen:] buscando el separador 0x01
+    # 4. PS || 0x01 || M: recorrer TODO el resto sin cortar.
+    #    encontrado: ya vimos el primer 0x01.
+    #    indice:     posicion de ese primer 0x01 (seleccion sin ramas).
+    #    invalido:   aparecio un byte distinto de 0x00 y 0x01 antes del separador.
     resto = db[HLEN:]
-    indice_separador = -1
+    encontrado = 0
+    indice = 0
+    invalido = 0
     for i, b in enumerate(resto):
-        if b == 0x01:
-            indice_separador = i
-            break
-        elif b != 0x00:
-            raise ValueError("Error de decodificacion OAEP: byte no nulo antes de separador 0x01.")
+        es_uno = _ct_byte_eq(b, 0x01)
+        es_cero = _ct_byte_eq(b, 0x00)
+        primero = es_uno & (1 - encontrado)
+        indice |= i & -primero              # -1 si primero == 1, 0 si no
+        invalido |= (1 - encontrado) & (1 - es_uno) & (1 - es_cero)
+        encontrado |= es_uno
 
-    if indice_separador == -1:
-        raise ValueError("Error de decodificacion OAEP: separador 0x01 no encontrado.")
+    malo |= invalido | (1 - encontrado)
+
+    # 5. Una sola decision, un solo mensaje.
+    if malo != 0:
+        raise ValueError(DECRYPTION_ERROR)
 
     # El mensaje comienza justo tras el byte 0x01
-    return bytes(resto[indice_separador + 1:])
+    return bytes(resto[indice + 1:])

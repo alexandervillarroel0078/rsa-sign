@@ -79,7 +79,7 @@ class TestGuiCargaClaves(unittest.TestCase):
         self.app = gui.RSAGuiApp(self.root)
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
-        self.pub, self.priv = generate_keypair(512)
+        self.pub, self.priv = generate_keypair(1024)
         self.ruta_pub = str(tmp / "clave_publica.json")
         self.ruta_priv = str(tmp / "clave_privada.json")
         save_public_key(self.pub, self.ruta_pub)

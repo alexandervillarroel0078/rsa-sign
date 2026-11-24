@@ -80,7 +80,7 @@ class TestAttacks(unittest.TestCase):
 
         # Ahora el atacante descifra un mensaje que la victima cifro con su clave publica
         mensaje_secreto = b"Clave secreta descubierta por Fermat"
-        criptograma = encrypt_oaep(mensaje_secreto, pub_debil)
+        criptograma = encrypt_oaep(mensaje_secreto, pub_debil, allow_weak=True)
 
         # El atacante usa su d recuperado para descifrar:
         texto_descifrado = decrypt_oaep(criptograma, priv_atacante)
