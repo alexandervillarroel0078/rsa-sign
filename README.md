@@ -13,10 +13,16 @@ claves, OAEP y PSS) está escrito a mano. En `src/` no se usan `hashlib`, `hmac`
 
 | Nombre | Registro | Usuario de GitHub |
 | :--- | :--- | :--- |
-| <<COMPLETAR>> | <<COMPLETAR>> | <<COMPLETAR>> |
-| <<COMPLETAR>> | <<COMPLETAR>> | <<COMPLETAR>> |
+| Alurralde Nelson | 221043551 |  |
+| Guzman Montalvan Marcos Lehonti | 220030081 | MarcosLehonti |
+| Ponce Yepez Andres Reyes | 220002223 | Reyes2901 |
+| Villarroel Siancas Marcos Alexander | 216058368 | alexandervillarroel0078 |
+| Zarate Mollo Josué | 220030561 | FibonacciRequests |
 
-Docente: <<COMPLETAR>>. Semestre: <<COMPLETAR>>.
+- Docente: Ing. Pérez Delgadillo Shirley Eulalia
+- Semestre: 2/2026
+- Materia: Criptografía y Seguridad (ELC107) - SA
+- Carrera: Ingeniería en Informática
 
 ## Requisitos
 
