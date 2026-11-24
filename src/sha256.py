@@ -123,6 +123,64 @@ def _compress(state: list, block: bytes) -> None:
         state[i] = (state[i] + v) & MASK32
 
 
+class Sha256:
+    """
+    SHA-256 incremental (streaming): update() varias veces y digest() al final.
+
+    Permite resumir archivos grandes por bloques sin cargarlos enteros en
+    memoria. El resultado es identico a sha256(datos_concatenados).
+    copy() duplica el estado intermedio (lo usa HMAC para precalcular).
+    """
+
+    def __init__(self, data: bytes = b"") -> None:
+        self._state = list(H0)        # H0..H7 actuales
+        self._buffer = bytearray()    # bytes pendientes (< 64)
+        self._length = 0              # longitud total procesada en bytes
+        if data:
+            self.update(data)
+
+    def update(self, data: bytes) -> "Sha256":
+        """Agrega datos al resumen. Procesa cada bloque completo de 64 bytes."""
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            raise TypeError("data debe ser bytes")
+        data = bytes(data)
+        self._length += len(data)
+        buf = self._buffer
+        buf.extend(data)
+        completos = len(buf) - (len(buf) % 64)
+        for i in range(0, completos, 64):
+            _compress(self._state, bytes(buf[i:i + 64]))
+        del buf[:completos]
+        return self
+
+    def copy(self) -> "Sha256":
+        """Devuelve una copia independiente del estado intermedio."""
+        otro = Sha256.__new__(Sha256)
+        otro._state = list(self._state)
+        otro._buffer = bytearray(self._buffer)
+        otro._length = self._length
+        return otro
+
+    def digest(self) -> bytes:
+        """
+        Resumen de 32 bytes de todo lo agregado. No modifica el objeto:
+        aplica el relleno FIPS 180-4 sobre una copia del estado.
+        """
+        state = list(self._state)
+        bit_len = (self._length * 8) & 0xFFFFFFFFFFFFFFFF
+        cola = bytearray(self._buffer)
+        cola.append(0x80)
+        cola.extend(b"\x00" * ((56 - len(cola) % 64) % 64))
+        cola.extend(bit_len.to_bytes(8, "big"))
+        for i in range(0, len(cola), 64):
+            _compress(state, bytes(cola[i:i + 64]))
+        # Concatenacion big-endian de las 8 palabras finales.
+        return b"".join(v.to_bytes(4, "big") for v in state)
+
+    def hexdigest(self) -> str:
+        return self.digest().hex()
+
+
 def sha256(data: bytes) -> bytes:
     """
     Calcula el resumen SHA-256 de 'data'.
@@ -141,6 +199,22 @@ def sha256(data: bytes) -> bytes:
 
     # Concatenacion big-endian de las 8 palabras finales.
     return b"".join(v.to_bytes(4, "big") for v in state)
+
+
+def sha256_file(path, chunk_size: int = 64 * 1024) -> bytes:
+    """
+    SHA-256 de un archivo leido por bloques de 'chunk_size' bytes (streaming).
+
+    La memoria usada no depende del tamano del archivo.
+    """
+    h = Sha256()
+    with open(path, "rb") as f:
+        while True:
+            bloque = f.read(chunk_size)
+            if not bloque:
+                break
+            h.update(bloque)
+    return h.digest()
 
 
 def sha256_hex(data: bytes) -> str:

@@ -9,10 +9,12 @@ Pestanas:
 5. Verificacion en Tiempo Constante y Demostracion de Ataques (Fermat y alteracion de 1 bit).
 """
 
-import os
+import threading
 import time
+import warnings
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from pathlib import Path
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 
 from .rsa import (
     generate_keypair,
@@ -20,10 +22,12 @@ from .rsa import (
     load_public_key,
     save_private_key,
     load_private_key,
+    is_encrypted_key_file,
     encrypt_oaep,
     decrypt_oaep,
     sign,
     verify,
+    public_key_fingerprint,
 )
 from .attacks import (
     fermat_attack_rsa,
@@ -31,10 +35,69 @@ from .attacks import (
     corrupt_bit,
 )
 from .sha256 import sha256_hex
+from . import kdf_mac
 
 # rsa.save_*_key / load_*_key usan JSON con n, e, d en hexadecimal (no PEM).
 KEY_EXT = ".json"
 KEY_FILETYPES = [("Archivos JSON", "*.json"), ("Todos", "*.*")]
+
+# Tamanos ofrecidos. 512 no se ofrece: no admite OAEP ni PSS con SHA-256.
+KEY_SIZES = [1024, 2048, 3072, 4096]
+
+# Archivo con los integrantes (uno por linea, '#' = comentario) en la raiz.
+AUTORES_PATH = Path(__file__).resolve().parent.parent / "AUTORES"
+AUTOR_POR_DEFECTO = "<<COMPLETAR>>"
+
+
+def leer_autores() -> list:
+    """Lee los integrantes desde AUTORES. Si no existe, devuelve [AUTOR_POR_DEFECTO]."""
+    try:
+        lineas = AUTORES_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return [AUTOR_POR_DEFECTO]
+    autores = [l.strip() for l in lineas if l.strip() and not l.strip().startswith("#")]
+    return autores or [AUTOR_POR_DEFECTO]
+
+
+def pedir_contrasena(parent, titulo: str, confirmar: bool = False):
+    """
+    Dialogo de contrasena (caracteres ocultos con '*'). Devuelve un bytearray
+    (borrable con kdf_mac.wipe) o None si se cancela.
+
+    Limitacion: tkinter entrega la contrasena como str inmutable; se convierte
+    a bytearray y se descarta la referencia, pero la copia str no se puede
+    sobrescribir.
+    """
+    texto = simpledialog.askstring(titulo, "Contrasena de la clave privada:", show="*", parent=parent)
+    if not texto:
+        return None
+    pw = bytearray(texto.encode("utf-8"))
+    del texto
+    if confirmar:
+        otra = simpledialog.askstring(titulo, "Repita la contrasena:", show="*", parent=parent)
+        iguales = otra is not None and bytearray(otra.encode("utf-8")) == pw
+        del otra
+        if not iguales:
+            kdf_mac.wipe(pw)
+            messagebox.showerror("Error", "Las contrasenas no coinciden.", parent=parent)
+            return None
+    return pw
+
+
+def describir_privada(priv) -> str:
+    """Resumen de la clave privada SIN mostrar d, p ni q."""
+    crt = "si" if getattr(priv, "p", None) else "no"
+    texto = f"En memoria (no se muestra). Modulo de {priv[0].bit_length()} bits, CRT: {crt}."
+    if getattr(priv, "legacy", False):
+        texto += ("\n[!] Formato antiguo {n, d}: no incluye p ni q (sin CRT). "
+                  "Genere un par nuevo para tener CRT y guardarlo cifrado.")
+    return texto
+
+
+def texto_firma_ejemplo() -> str:
+    # Formato de AUTORES: "Apellidos Nombres, Registro"; el texto usa solo el nombre.
+    nombre = leer_autores()[0].split(",")[0].strip() or AUTOR_POR_DEFECTO
+    return f"Yo, {nombre}, firmo electronicamente este documento."
 
 
 class RSAGuiApp:
@@ -82,12 +145,16 @@ class RSAGuiApp:
         f_top.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(f_top, text="Tamano de clave (bits):").pack(side="left", padx=5, pady=5)
-        self.var_bits = tk.IntVar(value=1024)
-        c_bits = ttk.Combobox(f_top, textvariable=self.var_bits, values=[512, 1024, 2048], width=8, state="readonly")
+        self.var_bits = tk.IntVar(value=2048)
+        c_bits = ttk.Combobox(f_top, textvariable=self.var_bits, values=KEY_SIZES, width=8, state="readonly")
         c_bits.pack(side="left", padx=5, pady=5)
 
-        btn_gen = ttk.Button(f_top, text="Generar Nuevas Claves", command=self._generar_claves)
-        btn_gen.pack(side="left", padx=15, pady=5)
+        self.btn_gen = ttk.Button(f_top, text="Generar Nuevas Claves", command=self._generar_claves)
+        self.btn_gen.pack(side="left", padx=15, pady=5)
+
+        # Indicador de progreso (indeterminado) mientras se buscan los primos.
+        self.progress = ttk.Progressbar(f_top, mode="indeterminate", length=90)
+        self.progress.pack(side="left", padx=5, pady=5)
 
         btn_load_pub = ttk.Button(f_top, text="Cargar Clave Publica...", command=self._cargar_pub_tab1)
         btn_load_pub.pack(side="right", padx=5, pady=5)
@@ -109,25 +176,53 @@ class RSAGuiApp:
         btn_save_priv.pack(side="left", padx=5)
 
     def _generar_claves(self):
+        """
+        Lanza la generacion en un hilo aparte para no congelar la ventana.
+        Tkinter no es seguro entre hilos: el hilo solo deja el resultado en
+        self._resultado_keygen y el hilo principal lo recoge con after().
+        """
         bits = self.var_bits.get()
         self.txt_keys.delete("1.0", "end")
-        self.txt_keys.insert("end", f"[*] Generando par de claves RSA de {bits} bits...\n")
-        self.root.update()
+        aviso = " (puede tardar varios segundos)" if bits >= 3072 else ""
+        self.txt_keys.insert("end", f"[*] Generando par de claves RSA de {bits} bits{aviso}...\n")
+        self.btn_gen.state(["disabled"])
+        self.progress.start(12)
+        self._resultado_keygen = None
+        self._t0_keygen = time.perf_counter()
 
-        t0 = time.time()
-        self.current_pub, self.current_priv = generate_keypair(bits=bits)
-        elapsed = time.time() - t0
+        def trabajo():
+            try:
+                self._resultado_keygen = ("ok", generate_keypair(bits=bits))
+            except Exception as err:  # se reporta en el hilo principal
+                self._resultado_keygen = ("error", err)
 
-        # El nucleo devuelve publica (n, e) y privada (n, d); p y q no se exponen.
+        threading.Thread(target=trabajo, daemon=True).start()
+        self.root.after(100, self._esperar_keygen)
+
+    def _esperar_keygen(self):
+        if self._resultado_keygen is None:
+            self.root.after(100, self._esperar_keygen)
+            return
+        self.progress.stop()
+        self.btn_gen.state(["!disabled"])
+        estado, valor = self._resultado_keygen
+        if estado == "error":
+            messagebox.showerror("Error", f"No se pudo generar la clave: {valor}")
+            return
+        elapsed = time.perf_counter() - self._t0_keygen
+        self.current_pub, self.current_priv = valor
+
+        # La clave privada (d, p, q) nunca se muestra en pantalla.
         n, e = self.current_pub
-        _, d = self.current_priv
         texto = (
             f"[+] Claves generadas exitosamente en {elapsed:.3f} segundos.\n\n"
             f"=== CLAVE PUBLICA ===\n"
             f"Modulo n ({n.bit_length()} bits):\n{n}\n\n"
             f"Exponente e:\n{e}\n\n"
+            f"Huella SHA-256 (n || e):\n{public_key_fingerprint(self.current_pub)}\n\n"
             f"=== CLAVE PRIVADA ===\n"
-            f"Exponente d:\n{d}\n"
+            f"{describir_privada(self.current_priv)}\n"
+            f"Guardela con 'Guardar Clave Privada': se cifra con contrasena.\n"
         )
         self.txt_keys.delete("1.0", "end")
         self.txt_keys.insert("end", texto)
@@ -156,9 +251,18 @@ class RSAGuiApp:
             defaultextension=KEY_EXT,
             filetypes=KEY_FILETYPES,
         )
-        if path:
-            save_private_key(self.current_priv, path)
-            messagebox.showinfo("Guardado", f"Clave privada guardada en:\n{path}")
+        if not path:
+            return
+        pw = pedir_contrasena(self.root, "Cifrar clave privada", confirmar=True)
+        if pw is None:
+            return
+        try:
+            save_private_key(self.current_priv, path, password=pw)
+            messagebox.showinfo("Guardado", f"Clave privada guardada CIFRADA en:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar la clave privada: {e}")
+        finally:
+            kdf_mac.wipe(pw)
 
     def _cargar_pub_tab1(self):
         path = filedialog.askopenfilename(
@@ -171,7 +275,11 @@ class RSAGuiApp:
             try:
                 self.current_pub = load_public_key(path)
                 self.txt_keys.delete("1.0", "end")
-                self.txt_keys.insert("end", f"[+] Clave publica cargada desde {path}:\nn: {self.current_pub[0]}\ne: {self.current_pub[1]}\n")
+                self.txt_keys.insert(
+                    "end",
+                    f"[+] Clave publica cargada desde {path}:\nn: {self.current_pub[0]}\ne: {self.current_pub[1]}\n"
+                    f"Huella SHA-256: {public_key_fingerprint(self.current_pub)}\n",
+                )
             except Exception as e:
                 messagebox.showerror("Error", f"Error al cargar clave publica: {e}")
 
@@ -183,15 +291,31 @@ class RSAGuiApp:
             filetypes=KEY_FILETYPES,
         )
         if path:
+            pw = None
+            if is_encrypted_key_file(path):
+                pw = pedir_contrasena(self.root, "Desbloquear clave privada")
+                if pw is None:
+                    return
             try:
-                # El nucleo devuelve la privada como tupla (n, d). Solo se guarda
-                # esa tupla (la usan Descifrado y Firma); la publica (n, e) se
-                # carga aparte y no se deriva de aqui.
-                self.current_priv = load_private_key(path)
+                # La privada la usan Descifrado y Firma; la publica (n, e) se
+                # carga aparte y no se deriva de aqui. d nunca se muestra.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # el formato antiguo se indica en el texto
+                    self.current_priv = load_private_key(path, password=pw)
                 self.txt_keys.delete("1.0", "end")
-                self.txt_keys.insert("end", f"[+] Clave privada cargada desde {path}:\nn: {self.current_priv[0]}\nd: {self.current_priv[1]}\n")
+                self.txt_keys.insert(
+                    "end",
+                    f"[+] Clave privada cargada desde {path}:\n{describir_privada(self.current_priv)}\n",
+                )
+            except ValueError as e:
+                if str(e) == kdf_mac.AUTH_ERROR:
+                    messagebox.showerror("Error", "Contrasena incorrecta o archivo de clave alterado.")
+                else:
+                    messagebox.showerror("Error", f"Error al cargar clave privada: {e}")
             except Exception as e:
                 messagebox.showerror("Error", f"Error al cargar clave privada: {e}")
+            finally:
+                kdf_mac.wipe(pw)
 
     # --------------------------------------------------------------------------
     # PESTANA 2: CIFRADO RSA-OAEP
@@ -271,12 +395,17 @@ class RSAGuiApp:
 
         try:
             c_bytes = bytes.fromhex(hex_data)
+        except ValueError:
+            messagebox.showerror("Error de Descifrado", "El criptograma no es hexadecimal valido.")
+            return
+        try:
             label = self.ent_dec_label.get().encode("utf-8")
             plano = decrypt_oaep(c_bytes, self.current_priv, label=label)
             self.txt_dec_out.delete("1.0", "end")
             self.txt_dec_out.insert("end", plano.decode("utf-8", errors="replace"))
-        except Exception as e:
-            messagebox.showerror("Error de Descifrado", f"Fallo al descifrar o relleno OAEP invalido:\n{e}")
+        except ValueError:
+            # Mensaje unico y fijo: no se revela la causa (evita oraculo de relleno).
+            messagebox.showerror("Error de Descifrado", "decryption error")
 
     # --------------------------------------------------------------------------
     # PESTANA 4: FIRMA DIGITAL RSA-PSS
@@ -286,7 +415,7 @@ class RSAGuiApp:
         f_msg.pack(fill="x", padx=10, pady=5)
         self.txt_sign_in = scrolledtext.ScrolledText(f_msg, height=5)
         self.txt_sign_in.pack(fill="x", padx=5, pady=5)
-        self.txt_sign_in.insert("end", "Yo, Josue Zarate, firmo electronicamente este documento.")
+        self.txt_sign_in.insert("end", texto_firma_ejemplo())
 
         f_btn = ttk.Frame(self.tab4)
         f_btn.pack(fill="x", padx=10, pady=5)
@@ -337,7 +466,7 @@ class RSAGuiApp:
         ttk.Label(f_ver_grid, text="Mensaje:").grid(row=0, column=0, sticky="w")
         self.ent_ver_msg = ttk.Entry(f_ver_grid, width=70)
         self.ent_ver_msg.grid(row=0, column=1, sticky="ew", padx=5, pady=2)
-        self.ent_ver_msg.insert("0", "Yo, Josue Zarate, firmo electronicamente este documento.")
+        self.ent_ver_msg.insert("0", texto_firma_ejemplo())
 
         ttk.Label(f_ver_grid, text="Firma Hex:").grid(row=1, column=0, sticky="w")
         self.ent_ver_sig = ttk.Entry(f_ver_grid, width=70)
@@ -358,7 +487,7 @@ class RSAGuiApp:
         btn_flip_msg.pack(side="left", padx=5, pady=5)
 
         # Ataque 2: Factorizacion de Fermat
-        f_att_fermat = ttk.LabelFrame(self.tab5, text="C. Ataque de Factorizacion de Fermat")
+        f_att_fermat = ttk.LabelFrame(self.tab5, text="C. Ataque de Factorizacion de Fermat (SOLO DEMOSTRACION)")
         f_att_fermat.pack(fill="both", expand=True, padx=10, pady=5)
 
         f_fermat_top = ttk.Frame(f_att_fermat)
