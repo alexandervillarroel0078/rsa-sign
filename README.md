@@ -54,10 +54,12 @@ Las tres formas son equivalentes: `python cli.py ...`, `python -m src.cli ...` y
 `python src/cli.py ...`. Ayuda de cada subcomando: `python cli.py <subcomando> --help`.
 
 ```bash
-# Claves (1024, 2048, 3072 o 4096 bits; por defecto 2048)
+# Claves (1024, 2048, 3072 o 4096 bits; por defecto 2048).
+# Pide la contraseña dos veces (no se ve al escribir) y guarda la privada CIFRADA.
 python cli.py keygen --bits 2048 --pub clave_publica.json --priv clave_privada.json
 
-# Firmar y verificar (texto con --msg o archivo con --file, que se lee por bloques)
+# Firmar y verificar (texto con --msg o archivo con --file, que se lee por bloques).
+# sign y decrypt piden la contraseña de la clave privada.
 python cli.py sign   --key clave_privada.json --file contrato.txt --out contrato.sig
 python cli.py verify --key clave_publica.json --file contrato.txt --sig-file contrato.sig
 
@@ -72,10 +74,47 @@ python cli.py demo-ataque maleabilidad   # RSA textbook es maleable y determinis
 python cli.py demo-ataque e-pequeno      # e = 3 sin relleno: raíz cúbica
 python cli.py demo-ataque e1             # firma falsa con e = 1: rechazada
 python cli.py demo-ataque oraculo        # OAEP: un único mensaje de error
+python cli.py demo-ataque timing         # con/sin CRT y dependencia del exponente
 ```
 
 Al generar o cargar una clave pública se muestra su **huella SHA-256** (de `n || e`),
 para comprobar por un canal aparte que ambas partes tienen la misma clave.
+
+**Contraseña sin interacción** (scripts, tareas programadas): `--pass-env VAR` lee la
+contraseña de la variable de entorno `VAR`. Es menos seguro que escribirla, porque otros
+procesos del mismo usuario pueden leer el entorno.
+
+```powershell
+$env:RSA_SIGN_PW = "una frase larga"        # Linux/macOS: export RSA_SIGN_PW="una frase larga"
+python cli.py sign --key clave_privada.json --msg hola --pass-env RSA_SIGN_PW
+```
+
+`--insecure-plain` (solo en `keygen`) guarda la clave privada **sin cifrar**; es únicamente
+para pruebas y demostraciones.
+
+### Formato de los archivos de clave
+
+| Archivo | Contenido |
+| :--- | :--- |
+| Clave pública | JSON `{"n": "0x...", "e": "0x..."}` |
+| Clave privada cifrada (por defecto) | JSON `{"version": "rsa-sign-encrypted-key-v1", "kdf": "pbkdf2-hmac-sha256", "iterations": 4000, "salt", "cipher": "hmac-sha256-ctr", "mac": "hmac-sha256", "nonce", "ciphertext", "tag"}` (binarios en hex) |
+| Clave privada sin cifrar (`--insecure-plain`) | JSON v2 `{"format": "rsa-sign-private-v2", "n", "e", "d", "p", "q", "dp", "dq", "qinv"}` |
+| Clave privada antigua | JSON `{"n", "d"}`: se sigue aceptando, con un aviso, pero sin CRT (no tiene `p` ni `q`) |
+
+El texto cifrado contiene el JSON v2. Cifrado de la clave (módulo `src/kdf_mac.py`, todo
+sobre el SHA-256 propio):
+
+1. `maestra = PBKDF2-HMAC-SHA256(contraseña, salt de 16 bytes, iteraciones, 32 bytes)`
+2. `k_enc = HMAC(maestra, "rsa-sign/enc")`, `k_mac = HMAC(maestra, "rsa-sign/mac")`
+3. Flujo en modo contador: `HMAC(k_enc, nonce || 0) || HMAC(k_enc, nonce || 1) || ...`;
+   `ciphertext = JSON v2 XOR flujo`
+4. `tag = HMAC(k_mac, cabecera || nonce || ciphertext)` (encrypt-then-MAC; la cabecera incluye
+   formato, iteraciones y salt)
+
+Al cargar, primero se comprueba la etiqueta (comparación sin salida temprana) y solo después
+se descifra. Una contraseña incorrecta o cualquier byte alterado dan el mismo error. Los
+archivos de clave privada se crean con permisos `0o600` (en Windows rigen las ACL de la
+carpeta del usuario).
 
 Los errores (archivo inexistente, hexadecimal inválido, clave débil, mensaje demasiado
 largo) se informan en una línea `[-] ...` con código de salida 1, sin traceback.
@@ -88,7 +127,9 @@ python gui.py
 
 Cinco pestañas: claves, cifrado OAEP, descifrado OAEP, firma PSS y verificación con
 demostraciones de ataque (alteración de 1 bit y Fermat). La generación de claves corre en un
-hilo aparte y no congela la ventana. El nombre del texto de ejemplo se lee del archivo
+hilo aparte y no congela la ventana. La clave privada nunca se muestra en pantalla: solo la
+pública y su huella. Al guardarla se pide la contraseña dos veces, y al cargar una clave
+cifrada se pide de nuevo. El nombre del texto de ejemplo se lee del archivo
 [AUTORES](AUTORES).
 
 ### Pruebas
@@ -118,7 +159,8 @@ Resultados medidos: [BENCHMARK_RESULTADOS.md](BENCHMARK_RESULTADOS.md).
 | `src/primes.py` | Criba de Eratóstenes, Miller-Rabin (`is_probable_prime`) y generación de primos (`generate_prime`). |
 | `src/oaep.py` | MGF1-SHA256 y relleno OAEP (RFC 8017) con decodificación sin salidas tempranas. |
 | `src/pss.py` | Relleno de firma EMSA-PSS-SHA256 (RFC 8017). |
-| `src/rsa.py` | Generación de claves, validación de claves públicas, huella, cifrado/descifrado OAEP, firma/verificación PSS, persistencia en JSON, RSA textbook (solo demostración). |
+| `src/kdf_mac.py` | HMAC-SHA256 (RFC 2104/4231), PBKDF2-HMAC-SHA256 (RFC 8018) y cifrado autenticado de la clave privada. |
+| `src/rsa.py` | Generación de claves (`RSAPrivateKey` con CRT), operación privada con CRT y blinding, validación de claves públicas, huella, cifrado/descifrado OAEP, firma/verificación PSS, persistencia en JSON (cifrada), RSA textbook (solo demostración). |
 | `src/attacks.py` | Ataque de Fermat, clave débil, alteración de 1 bit y demostraciones (maleabilidad, e pequeño, e = 1, oráculo OAEP). |
 | `src/cli.py`, `src/gui.py` | Interfaces de línea de comandos y gráfica. |
 | `src/benchmark.py` | Medición de rendimiento y generación del informe. |
@@ -141,19 +183,40 @@ Resultados medidos: [BENCHMARK_RESULTADOS.md](BENCHMARK_RESULTADOS.md).
 - **Sin oráculo de relleno**: cualquier fallo de descifrado da el mismo
   `ValueError("decryption error")`, y la decodificación OAEP recorre todo el bloque antes de
   decidir.
+- **CRT (Teorema Chino del Resto) con recombinación de Garner**: la clave privada guarda
+  `p, q, dP = d mod (p-1), dQ = d mod (q-1), qInv = q⁻¹ mod p` (calculado con el AEE).
+  Descifrado y firma hacen `m1 = c^dP mod p`, `m2 = c^dQ mod q`, `h = qInv·(m1 - m2) mod p`,
+  `m = m2 + h·q`. Medido: de 2 a 3,2 veces más rápido según el tamaño (ver benchmark).
+- **Blinding**: antes de la operación privada se toma `r` aleatorio y se opera sobre
+  `c·r^e mod n`; el resultado se multiplica por `r⁻¹`. El tiempo deja de depender del valor
+  que elige el atacante (contramedida contra ataques de temporización).
+- **Protección contra fallos**: tras firmar se comprueba `s^e mod n = EM` antes de entregar la
+  firma. Una firma CRT defectuosa permitiría factorizar `n` (ataque de Bellcore).
+- **Clave privada cifrada en disco** con PBKDF2-HMAC-SHA256 y encrypt-then-MAC (ver Formato de
+  los archivos de clave).
 
 ## Limitaciones conocidas
 
 - **Tiempo constante**: los enteros de Python no garantizan operaciones de tiempo constante.
-  La exponenciación modular depende de los bits del exponente. Las comparaciones por
-  acumulación XOR eliminan las salidas tempranas, no las diferencias microarquitectónicas.
+  La exponenciación modular depende de los bits del exponente (lo muestra
+  `python cli.py demo-ataque timing`). El blinding y las comparaciones por acumulación XOR
+  eliminan las dependencias gruesas, no las microarquitectónicas.
 - **Rendimiento**: SHA-256 en Python puro procesa del orden de 0,3 MiB/s (ver benchmark);
   firmar un archivo de cientos de MB tarda minutos.
-- **Clave privada**: hoy se guarda en JSON (`n`, `d` en hexadecimal) **sin cifrar**. Protéjala
-  con permisos del sistema y no la versione (`.gitignore` excluye `clave_*`).
+- **Iteraciones de PBKDF2**: se usan **4000** para que desbloquear la clave tarde de 1 a 2 s
+  (medido: 1,24 s en promedio con un Ryzen 5 7535HS). OWASP recomienda 600 000 para
+  PBKDF2-HMAC-SHA256, unas 150 veces más; en Python puro tardaría de 3 a 5 minutos. Con 4000
+  iteraciones la protección frente a un atacante que roba el archivo y prueba contraseñas
+  con GPU es **baja**: use una frase de contraseña larga. El número se guarda en cada archivo
+  y puede subirse sin romper los existentes.
+- **Memoria**: la contraseña, las claves derivadas y el flujo de cifrado se guardan en
+  `bytearray` y se sobrescriben con ceros al terminar. Pero los `int` de Python son
+  inmutables: `d`, `p`, `q` y los valores intermedios de SHA-256 no se pueden borrar de forma
+  garantizada, y quedan en memoria hasta que el recolector los libera. La GUI recibe la
+  contraseña de tkinter como `str`, que tampoco se puede borrar.
+- **Clave antigua `{n, d}`**: se acepta, pero sin CRT; el blinding solo se activa si se
+  comprueba que `e = 65537` corresponde a `d`.
 - **OAEP** cifra mensajes cortos (como máximo `k - 66` bytes). No hay modo híbrido.
-- **Memoria**: los `int` de Python son inmutables; `d`, `p` y `q` no se pueden borrar de la
-  memoria de forma garantizada.
 
 ## Mejoras futuras
 

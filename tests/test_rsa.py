@@ -182,7 +182,7 @@ class TestRSACipher(unittest.TestCase):
         # 1. Uso con TemporaryDirectory
         with tempfile.TemporaryDirectory() as tmpdir:
             p_dir = Path(tmpdir) / "private_key.json"
-            save_private_key(priv, p_dir)
+            save_private_key(priv, p_dir, insecure_plain=True)
             cargada = load_private_key(p_dir)
             self.assertEqual(cargada, priv)
 
@@ -190,7 +190,7 @@ class TestRSACipher(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmpfile:
             p_file = Path(tmpfile.name)
         try:
-            save_private_key(priv, p_file)
+            save_private_key(priv, p_file, insecure_plain=True)
             cargada = load_private_key(p_file)
             self.assertEqual(cargada, priv)
         finally:
@@ -245,7 +245,7 @@ class TestRSACipher(unittest.TestCase):
             p_pub = Path(tmpdir) / "pub.json"
             p_priv = Path(tmpdir) / "priv.json"
             save_public_key(pub, p_pub)
-            save_private_key(priv, p_priv)
+            save_private_key(priv, p_priv, insecure_plain=True)
 
             with open(p_pub, "r", encoding="utf-8") as f:
                 data_pub = json.load(f)

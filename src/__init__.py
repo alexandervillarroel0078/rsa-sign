@@ -7,7 +7,8 @@ Modulos:
 - primes    Miller-Rabin y generacion de primos.
 - oaep      MGF1 y relleno OAEP (RFC 8017).
 - pss       Relleno EMSA-PSS (RFC 8017).
-- rsa       Claves, cifrado OAEP, firma PSS, persistencia y validacion.
+- kdf_mac   HMAC-SHA256, PBKDF2-HMAC-SHA256 y cifrado de la clave privada.
+- rsa       Claves (CRT), cifrado OAEP, firma PSS, persistencia y validacion.
 - attacks   Ataques y demostraciones (Fermat, textbook, e=1, oraculo).
 La CLI (src.cli), la GUI (src.gui) y el benchmark (src.benchmark) no se
 importan aqui para no cargar tkinter ni argparse al usar la libreria.
@@ -18,14 +19,19 @@ from .mathcore import egcd, gcd, modexp, modinv
 from .primes import generate_prime, is_probable_prime
 from .oaep import DECRYPTION_ERROR, mgf1, oaep_decode, oaep_encode
 from .pss import emsa_pss_encode, emsa_pss_verify
+from .kdf_mac import hmac_sha256, pbkdf2_hmac_sha256
 from .rsa import (
     E_DEFAULT,
     MIN_PUBLIC_BITS,
+    LegacyKeyFormatWarning,
+    RSAPrivateKey,
+    rsa_private_op,
     decrypt,
     decrypt_oaep,
     encrypt,
     encrypt_oaep,
     generate_keypair,
+    is_encrypted_key_file,
     load_private_key,
     load_public_key,
     public_key_fingerprint,
@@ -50,7 +56,8 @@ __all__ = [
     "generate_prime", "is_probable_prime",
     "DECRYPTION_ERROR", "mgf1", "oaep_decode", "oaep_encode",
     "emsa_pss_encode", "emsa_pss_verify",
-    "E_DEFAULT", "MIN_PUBLIC_BITS", "decrypt", "decrypt_oaep", "encrypt", "encrypt_oaep",
+    "hmac_sha256", "pbkdf2_hmac_sha256", "is_encrypted_key_file",
+    "E_DEFAULT", "MIN_PUBLIC_BITS", "LegacyKeyFormatWarning", "RSAPrivateKey", "rsa_private_op", "decrypt", "decrypt_oaep", "encrypt", "encrypt_oaep",
     "generate_keypair", "load_private_key", "load_public_key", "public_key_fingerprint",
     "save_private_key", "save_public_key", "sign", "sign_hash", "validate_public_key",
     "verify", "verify_hash",

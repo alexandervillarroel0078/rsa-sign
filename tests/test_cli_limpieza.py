@@ -149,7 +149,8 @@ class TestCLI(unittest.TestCase):
         cls.d = Path(cls._tmp.name)
         cls.pub = str(cls.d / "pub.json")
         cls.priv = str(cls.d / "priv.json")
-        codigo, salida = _cli("keygen", "--bits", "1024", "--pub", cls.pub, "--priv", cls.priv)
+        codigo, salida = _cli("keygen", "--bits", "1024", "--pub", cls.pub, "--priv", cls.priv,
+                              "--insecure-plain")
         assert codigo == 0, salida
 
     @classmethod

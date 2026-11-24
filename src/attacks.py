@@ -290,3 +290,36 @@ def demo_oraculo_oaep(bits: int = 1024, muestras: int = 200) -> dict:
             clave = str(err)
         errores[clave] = errores.get(clave, 0) + 1
     return {"casos": len(casos), "mensajes": errores}
+
+
+def demo_timing(bits: int = 2048, reps: int = 10) -> dict:
+    """
+    Tiempos de la operacion privada c^d mod n:
+    - con CRT y sin CRT (misma clave, ambas con blinding);
+    - square-and-multiply con un exponente de pocos bits a 1 frente a uno con
+      todos los bits a 1: el tiempo depende del exponente, por eso un atacante
+      que mide tiempos aprende sobre d. El blinding aleatoriza la base para que
+      el atacante no controle lo que se exponencia.
+    """
+    import time
+    from .rsa import RSAPrivateKey, generate_keypair, rsa_private_op
+
+    _, priv = generate_keypair(bits)
+    n = priv[0]
+    sin_crt = RSAPrivateKey(priv[0], priv[1], e=priv.e)
+    c = secrets.randbelow(n)
+
+    def medir(func):
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            func()
+        return (time.perf_counter() - t0) / reps
+
+    t_crt = medir(lambda: rsa_private_op(c, priv))
+    t_sin = medir(lambda: rsa_private_op(c, sin_crt))
+    exp_ligero = (1 << (bits - 1)) | 1
+    exp_pesado = (1 << bits) - 1
+    t_ligero = medir(lambda: modexp(c, exp_ligero, n))
+    t_pesado = medir(lambda: modexp(c, exp_pesado, n))
+    return {"bits": bits, "reps": reps, "con_crt_s": t_crt, "sin_crt_s": t_sin,
+            "speedup": t_sin / t_crt, "exp_2_unos_s": t_ligero, "exp_todo_unos_s": t_pesado}

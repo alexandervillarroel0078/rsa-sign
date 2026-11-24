@@ -11,9 +11,10 @@ Pestanas:
 
 import threading
 import time
+import warnings
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 
 from .rsa import (
     generate_keypair,
@@ -21,6 +22,7 @@ from .rsa import (
     load_public_key,
     save_private_key,
     load_private_key,
+    is_encrypted_key_file,
     encrypt_oaep,
     decrypt_oaep,
     sign,
@@ -33,6 +35,7 @@ from .attacks import (
     corrupt_bit,
 )
 from .sha256 import sha256_hex
+from . import kdf_mac
 
 # rsa.save_*_key / load_*_key usan JSON con n, e, d en hexadecimal (no PEM).
 KEY_EXT = ".json"
@@ -54,6 +57,41 @@ def leer_autores() -> list:
         return [AUTOR_POR_DEFECTO]
     autores = [l.strip() for l in lineas if l.strip() and not l.strip().startswith("#")]
     return autores or [AUTOR_POR_DEFECTO]
+
+
+def pedir_contrasena(parent, titulo: str, confirmar: bool = False):
+    """
+    Dialogo de contrasena (caracteres ocultos con '*'). Devuelve un bytearray
+    (borrable con kdf_mac.wipe) o None si se cancela.
+
+    Limitacion: tkinter entrega la contrasena como str inmutable; se convierte
+    a bytearray y se descarta la referencia, pero la copia str no se puede
+    sobrescribir.
+    """
+    texto = simpledialog.askstring(titulo, "Contrasena de la clave privada:", show="*", parent=parent)
+    if not texto:
+        return None
+    pw = bytearray(texto.encode("utf-8"))
+    del texto
+    if confirmar:
+        otra = simpledialog.askstring(titulo, "Repita la contrasena:", show="*", parent=parent)
+        iguales = otra is not None and bytearray(otra.encode("utf-8")) == pw
+        del otra
+        if not iguales:
+            kdf_mac.wipe(pw)
+            messagebox.showerror("Error", "Las contrasenas no coinciden.", parent=parent)
+            return None
+    return pw
+
+
+def describir_privada(priv) -> str:
+    """Resumen de la clave privada SIN mostrar d, p ni q."""
+    crt = "si" if getattr(priv, "p", None) else "no"
+    texto = f"En memoria (no se muestra). Modulo de {priv[0].bit_length()} bits, CRT: {crt}."
+    if getattr(priv, "legacy", False):
+        texto += ("\n[!] Formato antiguo {n, d}: no incluye p ni q (sin CRT). "
+                  "Genere un par nuevo para tener CRT y guardarlo cifrado.")
+    return texto
 
 
 def texto_firma_ejemplo() -> str:
@@ -172,9 +210,8 @@ class RSAGuiApp:
         elapsed = time.perf_counter() - self._t0_keygen
         self.current_pub, self.current_priv = valor
 
-        # El nucleo devuelve publica (n, e) y privada (n, d); p y q no se exponen.
+        # La clave privada (d, p, q) nunca se muestra en pantalla.
         n, e = self.current_pub
-        _, d = self.current_priv
         texto = (
             f"[+] Claves generadas exitosamente en {elapsed:.3f} segundos.\n\n"
             f"=== CLAVE PUBLICA ===\n"
@@ -182,7 +219,8 @@ class RSAGuiApp:
             f"Exponente e:\n{e}\n\n"
             f"Huella SHA-256 (n || e):\n{public_key_fingerprint(self.current_pub)}\n\n"
             f"=== CLAVE PRIVADA ===\n"
-            f"Exponente d:\n{d}\n"
+            f"{describir_privada(self.current_priv)}\n"
+            f"Guardela con 'Guardar Clave Privada': se cifra con contrasena.\n"
         )
         self.txt_keys.delete("1.0", "end")
         self.txt_keys.insert("end", texto)
@@ -211,9 +249,18 @@ class RSAGuiApp:
             defaultextension=KEY_EXT,
             filetypes=KEY_FILETYPES,
         )
-        if path:
-            save_private_key(self.current_priv, path)
-            messagebox.showinfo("Guardado", f"Clave privada guardada en:\n{path}")
+        if not path:
+            return
+        pw = pedir_contrasena(self.root, "Cifrar clave privada", confirmar=True)
+        if pw is None:
+            return
+        try:
+            save_private_key(self.current_priv, path, password=pw)
+            messagebox.showinfo("Guardado", f"Clave privada guardada CIFRADA en:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar la clave privada: {e}")
+        finally:
+            kdf_mac.wipe(pw)
 
     def _cargar_pub_tab1(self):
         path = filedialog.askopenfilename(
@@ -242,15 +289,31 @@ class RSAGuiApp:
             filetypes=KEY_FILETYPES,
         )
         if path:
+            pw = None
+            if is_encrypted_key_file(path):
+                pw = pedir_contrasena(self.root, "Desbloquear clave privada")
+                if pw is None:
+                    return
             try:
-                # El nucleo devuelve la privada como tupla (n, d). Solo se guarda
-                # esa tupla (la usan Descifrado y Firma); la publica (n, e) se
-                # carga aparte y no se deriva de aqui.
-                self.current_priv = load_private_key(path)
+                # La privada la usan Descifrado y Firma; la publica (n, e) se
+                # carga aparte y no se deriva de aqui. d nunca se muestra.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")  # el formato antiguo se indica en el texto
+                    self.current_priv = load_private_key(path, password=pw)
                 self.txt_keys.delete("1.0", "end")
-                self.txt_keys.insert("end", f"[+] Clave privada cargada desde {path}:\nn: {self.current_priv[0]}\nd: {self.current_priv[1]}\n")
+                self.txt_keys.insert(
+                    "end",
+                    f"[+] Clave privada cargada desde {path}:\n{describir_privada(self.current_priv)}\n",
+                )
+            except ValueError as e:
+                if str(e) == kdf_mac.AUTH_ERROR:
+                    messagebox.showerror("Error", "Contrasena incorrecta o archivo de clave alterado.")
+                else:
+                    messagebox.showerror("Error", f"Error al cargar clave privada: {e}")
             except Exception as e:
                 messagebox.showerror("Error", f"Error al cargar clave privada: {e}")
+            finally:
+                kdf_mac.wipe(pw)
 
     # --------------------------------------------------------------------------
     # PESTANA 2: CIFRADO RSA-OAEP

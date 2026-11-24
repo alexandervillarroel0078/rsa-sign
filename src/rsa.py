@@ -6,7 +6,10 @@ Utiliza modinv, modexp y gcd de mathcore y generate_prime de primes.
 """
 
 import json
+import os
+import secrets
 import sys
+import warnings
 from pathlib import Path
 
 # Soporte para ejecucion tanto como modulo (python -m src.rsa)
@@ -17,6 +20,7 @@ try:
     from .oaep import DECRYPTION_ERROR, oaep_decode, oaep_encode
     from .pss import emsa_pss_encode, emsa_pss_verify
     from .sha256 import sha256
+    from . import kdf_mac
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from src.mathcore import gcd, modexp, modinv
@@ -24,6 +28,7 @@ except ImportError:
     from src.oaep import DECRYPTION_ERROR, oaep_decode, oaep_encode
     from src.pss import emsa_pss_encode, emsa_pss_verify
     from src.sha256 import sha256
+    from src import kdf_mac
 
 
 # Exponente publico estandar de Fermat F4 = 2^16 + 1
@@ -88,6 +93,145 @@ def _validate_private_key(private: tuple[int, int]) -> tuple[int, int]:
     return n, d
 
 
+class LegacyKeyFormatWarning(UserWarning):
+    """Se cargo una clave privada en el formato antiguo {n, d} (sin CRT)."""
+
+
+class RSAPrivateKey(tuple):
+    """
+    Clave privada RSA.
+
+    Es una tupla (n, d), igual que el formato original, por lo que
+    'n, d = clave' y 'clave == (n, d)' siguen funcionando. Ademas guarda como
+    atributos los parametros del Teorema Chino del Resto (PKCS #1, RFC 8017 3.2):
+
+        e     exponente publico (necesario para blinding y para la
+              comprobacion de la firma); None si se desconoce
+        p, q  factores primos de n
+        dp    d mod (p - 1)
+        dq    d mod (q - 1)
+        qinv  q^(-1) mod p (calculado con el algoritmo extendido de Euclides)
+
+    Si p y q son None, la clave no tiene CRT y se usa m = c^d mod n.
+    """
+
+    def __new__(cls, n: int, d: int, e: int | None = None, p: int | None = None,
+                q: int | None = None, dp: int | None = None, dq: int | None = None,
+                qinv: int | None = None):
+        obj = super().__new__(cls, (n, d))
+        obj.e, obj.p, obj.q, obj.dp, obj.dq, obj.qinv = e, p, q, dp, dq, qinv
+        obj.legacy = False
+        return obj
+
+    @classmethod
+    def from_primes(cls, p: int, q: int, e: int = E_DEFAULT) -> "RSAPrivateKey":
+        """Construye la clave completa a partir de p, q y e."""
+        n = p * q
+        phi = (p - 1) * (q - 1)
+        d = modinv(e, phi)                      # d = e^(-1) mod phi(n), por AEE
+        return cls(n, d, e=e, p=p, q=q,
+                   dp=d % (p - 1),              # dP = d mod (p - 1)
+                   dq=d % (q - 1),              # dQ = d mod (q - 1)
+                   qinv=modinv(q, p))           # qInv = q^(-1) mod p, por AEE
+
+    @property
+    def n(self) -> int:
+        return self[0]
+
+    @property
+    def d(self) -> int:
+        return self[1]
+
+    @property
+    def has_crt(self) -> bool:
+        return self.p is not None
+
+    def public_key(self) -> tuple[int, int]:
+        """(n, e) si se conoce e."""
+        if self.e is None:
+            raise ValueError("La clave privada no incluye el exponente publico e.")
+        return (self.n, self.e)
+
+    def check(self) -> None:
+        """
+        Comprueba la coherencia de los parametros (Zero-Trust al cargar).
+
+        :raises ValueError: si p*q != n, e*d != 1 mod lcm(p-1, q-1) o algun
+                            parametro CRT no corresponde a d, p y q.
+        """
+        n, d = self
+        if self.has_crt:
+            p, q = self.p, self.q
+            if p * q != n or p < 3 or q < 3:
+                raise ValueError("Clave privada incoherente: p * q != n.")
+            lam = (p - 1) * (q - 1) // gcd(p - 1, q - 1)
+            if self.e is not None and (self.e * d) % lam != 1:
+                raise ValueError("Clave privada incoherente: e * d != 1 (mod lambda(n)).")
+            if self.dp != d % (p - 1) or self.dq != d % (q - 1) or (self.qinv * q) % p != 1:
+                raise ValueError("Clave privada incoherente: parametros CRT invalidos.")
+
+    def __repr__(self) -> str:
+        # No se muestran d, p ni q para que no terminen en logs o trazas.
+        return f"RSAPrivateKey(bits={self.n.bit_length()}, crt={self.has_crt}, legacy={self.legacy})"
+
+    __str__ = __repr__
+
+
+def _clave_e(private) -> int | None:
+    """Exponente publico asociado a la clave privada, si se conoce."""
+    return getattr(private, "e", None)
+
+
+def rsa_private_op(c: int, private: tuple[int, int], use_crt: bool = True,
+                   blinding: bool = True) -> int:
+    """
+    Operacion con clave privada m = c^d mod n (RSADP / RSASP1 de RFC 8017).
+
+    1. Blinding (si se conoce e): se elige r aleatorio con gcd(r, n) = 1 y se
+       opera sobre c' = c * r^e mod n. El resultado es m' = m * r, y se
+       devuelve m = m' * r^(-1) mod n. Asi el tiempo de la exponenciacion no
+       depende del c que eligio el atacante (contramedida contra ataques de
+       temporizacion tipo Kocher).
+    2. CRT con recombinacion de Garner (si la clave tiene p y q):
+           m1 = c'^dP mod p,   m2 = c'^dQ mod q
+           h  = qInv * (m1 - m2) mod p
+           m  = m2 + h * q
+       Dos exponenciaciones con modulos y exponentes de la mitad de bits:
+       en teoria unas 4 veces mas rapido que c^d mod n.
+    3. Sin CRT: m = c^d mod n (cuadrar y multiplicar).
+
+    :param c: entero 0 <= c < n.
+    :param use_crt: permite desactivar CRT (comparaciones y benchmark).
+    :param blinding: permite desactivar el blinding (pruebas).
+    """
+    n, d = _validate_private_key(private)
+    if not 0 <= c < n:
+        raise ValueError("El entero de entrada debe cumplir 0 <= c < n.")
+    e = _clave_e(private)
+
+    r_inv = None
+    if blinding and e is not None:
+        while True:
+            r = 2 + secrets.randbelow(n - 3)
+            if gcd(r, n) == 1:
+                break
+        c = (c * modexp(r, e, n)) % n
+        r_inv = modinv(r, n)
+
+    if use_crt and getattr(private, "p", None) is not None:
+        p, q = private.p, private.q
+        m1 = modexp(c % p, private.dp, p)
+        m2 = modexp(c % q, private.dq, q)
+        h = (private.qinv * (m1 - m2)) % p
+        m = m2 + h * q
+    else:
+        m = modexp(c, d, n)
+
+    if r_inv is not None:
+        m = (m * r_inv) % n
+    return m
+
+
 def public_key_fingerprint(public: tuple[int, int]) -> str:
     """
     Huella de una clave publica: SHA-256 (implementacion propia) de n || e.
@@ -144,7 +288,8 @@ def generate_keypair(bits: int) -> tuple[tuple[int, int], tuple[int, int]]:
     Genera un par de claves RSA (publica y privada) con un modulo de la longitud dada.
 
     :param bits: Longitud total en bits del modulo n (entero par >= 512).
-    :return: Tupla ((n, e), (n, d)) correspondiente a (clave_publica, clave_privada).
+    :return: Tupla ((n, e), clave_privada). clave_privada es un RSAPrivateKey: se
+             comporta como la tupla (n, d) y ademas lleva e, p, q, dP, dQ, qInv para CRT.
     :raises ValueError: Si bits no es entero, es menor que 512, o no es un numero par.
     """
     # 1. Validar parametro bits
@@ -196,8 +341,6 @@ def generate_keypair(bits: int) -> tuple[tuple[int, int], tuple[int, int]]:
             if gcd(e, phi) != 1:
                 continue
 
-            # Exponente privado d tal que (e * d) = 1 (mod phi)
-            d = modinv(e, phi)
             encontrado = True
             break
 
@@ -206,8 +349,8 @@ def generate_keypair(bits: int) -> tuple[tuple[int, int], tuple[int, int]]:
 
     # Clave publica: (n, e)
     public_key = (n, e)
-    # Clave privada: (n, d)
-    private_key = (n, d)
+    # Clave privada: tupla (n, d) con parametros CRT; d = e^(-1) mod phi(n)
+    private_key = RSAPrivateKey.from_primes(p, q, e)
 
     return (public_key, private_key)
 
@@ -279,8 +422,8 @@ def decrypt(ct: bytes, private: tuple[int, int], length: int | None = None) -> b
     if c >= n:
         raise ValueError("El criptograma es invalido para el modulo.")
 
-    # Exponenciacion modular: m = c^d (mod n)
-    m = modexp(c, d, n)
+    # m = c^d (mod n), con CRT y blinding si la clave los admite
+    m = rsa_private_op(c, private)
 
     # Convertir entero m a bytes: longitud minima o fija si se indico
     if length is None:
@@ -362,7 +505,8 @@ def decrypt_oaep(ct: bytes, private: tuple[int, int], label: bytes = b"") -> byt
     if c >= n:
         raise ValueError(DECRYPTION_ERROR)
 
-    m = modexp(c, d, n)
+    # m = c^d (mod n), con CRT y blinding si la clave los admite
+    m = rsa_private_op(c, private)
     em = int_to_bytes(m, length=k)
     return oaep_decode(em, k, label)
 
@@ -391,7 +535,8 @@ def sign_hash(m_hash: bytes, private: tuple[int, int], salt_len: int = 32) -> by
 
     Permite firmar archivos grandes resumidos por bloques con sha256_file.
     Aplica EMSA-PSS-SHA256 con em_bits = n.bit_length() - 1, convierte EM a
-    entero m y calcula s = m^d (mod n). Devuelve k bytes.
+    entero m y calcula s = m^d (mod n) con rsa_private_op (CRT + blinding si la
+    clave los admite). Si se conoce e, comprueba s^e mod n == EM. Devuelve k bytes.
     """
     if not isinstance(m_hash, (bytes, bytearray)) or len(m_hash) != 32:
         raise TypeError("m_hash debe ser un resumen SHA-256 de 32 bytes.")
@@ -410,7 +555,15 @@ def sign_hash(m_hash: bytes, private: tuple[int, int], salt_len: int = 32) -> by
 
     # Conversion a entero y operacion con clave privada s = m^d (mod n)
     m = bytes_to_int(em)
-    s = modexp(m, d, n)
+    s = rsa_private_op(m, private)
+
+    # Proteccion contra fallos (ataque de Bellcore / Boneh-DeMillo-Lipton):
+    # si un error de calculo afectara a una de las dos mitades del CRT, la
+    # firma defectuosa permitiria factorizar n con gcd(s'^e - m, n). Por eso
+    # se comprueba s^e mod n == EM antes de entregar la firma.
+    e = _clave_e(private)
+    if e is not None and modexp(s, e, n) != m:
+        raise ValueError("Error interno al firmar: la firma no verifica (posible fallo de calculo).")
 
     # Devolver firma de longitud fija k bytes
     return int_to_bytes(s, length=k)
@@ -559,46 +712,160 @@ def load_public_key(path: str | Path, allow_weak: bool = False) -> tuple[int, in
     return validate_public_key((n, e), allow_weak=allow_weak)
 
 
-def save_private_key(private: tuple[int, int], path: str | Path) -> None:
+PRIVATE_KEY_FORMAT_V2 = "rsa-sign-private-v2"
+_CAMPOS_V2 = ("n", "e", "d", "p", "q", "dp", "dq", "qinv")
+
+
+def private_key_to_dict(private: tuple[int, int]) -> dict:
     """
-    Guarda una clave privada RSA (n, d) en un archivo con formato JSON.
+    Serializa la clave privada a un diccionario JSON (enteros en hex '0x...').
 
-    ADVERTENCIA DE SEGURIDAD:
-    El archivo resultante contiene el exponente privado en texto plano (sin cifrar).
-    El almacenamiento protegido mediante derivacion de contrasena y cifrado simetrico
-    esta fuera del alcance de este modulo y sera gestionado por la interfaz de usuario (GUI).
-    Asegurese de almacenar este archivo en un entorno con control de acceso estricto.
-
-    Serializa los enteros n y d como cadenas hexadecimales con prefijo '0x'
-    para prevenir perdidas de precision en parsers JSON genericos.
-
-    :param private: Tupla (n, d) con la clave privada.
-    :param path: Ruta del archivo donde guardar la clave (str o Path).
-    :raises TypeError: Si los parametros no tienen los tipos esperados.
-    :raises ValueError: Si los componentes de la clave no son positivos.
+    Formato v2: {"format": "rsa-sign-private-v2", n, e, d, p, q, dp, dq, qinv}.
+    Una tupla (n, d) sin CRT se serializa con los campos disponibles.
     """
     n, d = _validate_private_key(private)
+    data = {"format": PRIVATE_KEY_FORMAT_V2, "n": hex(n), "d": hex(d)}
+    for campo in ("e", "p", "q", "dp", "dq", "qinv"):
+        valor = getattr(private, campo, None)
+        if valor is not None:
+            data[campo] = hex(valor)
+    return data
 
-    data = {
-        "n": hex(n),
-        "d": hex(d)
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+
+def _hex_a_int(data: dict, campo: str) -> int:
+    valor = data[campo]
+    if not isinstance(valor, str):
+        raise ValueError(f"El campo '{campo}' debe ser una cadena hexadecimal.")
+    try:
+        x = int(valor, 16)
+    except ValueError as err:
+        raise ValueError(f"Formato hexadecimal invalido en clave privada ('{campo}'): {err}") from err
+    if x <= 0:
+        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
+    return x
 
 
-def load_private_key(path: str | Path) -> tuple[int, int]:
+def private_key_from_dict(data: dict) -> RSAPrivateKey:
     """
-    Carga una clave privada RSA (n, d) desde un archivo JSON.
+    Reconstruye la clave privada desde un diccionario (formato v2 o antiguo).
 
-    Espera un objeto JSON con campos 'n' y 'd' codificados en hexadecimal con prefijo '0x'.
-    Si el archivo no existe, lanza FileNotFoundError.
-    Si el JSON esta corrupto, faltan campos o los valores son invalidos, lanza ValueError.
+    - v2 (con p y q): se reconstruye con CRT y se comprueba su coherencia.
+    - Antiguo {n, d}: se acepta sin CRT, con e = 65537 por defecto, y se emite
+      LegacyKeyFormatWarning. Antes de usar e para blinding se comprueba que
+      (r^e)^d = r mod n; si no se cumple, e se descarta (sin blinding).
+    """
+    if not isinstance(data, dict):
+        raise ValueError("El contenido del JSON debe ser un diccionario.")
+    if "n" not in data or "d" not in data:
+        raise ValueError("El JSON de clave privada debe contener los campos 'n' y 'd'.")
+    n, d = _hex_a_int(data, "n"), _hex_a_int(data, "d")
+
+    if all(campo in data for campo in _CAMPOS_V2):
+        valores = {campo: _hex_a_int(data, campo) for campo in _CAMPOS_V2}
+        clave = RSAPrivateKey(**valores)
+        clave.check()
+        return clave
+
+    # Formato antiguo: sin CRT.
+    e = _hex_a_int(data, "e") if "e" in data else E_DEFAULT
+    clave = RSAPrivateKey(n, d, e=e)
+    r = 2 + secrets.randbelow(n - 3) if n > 4 else 2
+    if modexp(modexp(r, e, n), d, n) != r % n:
+        clave.e = None  # e no corresponde a d: sin blinding ni comprobacion de firma
+    clave.legacy = True
+    warnings.warn(
+        "Clave privada en formato antiguo {n, d}: no incluye p ni q, se usa sin CRT. "
+        "Genere un par nuevo (keygen) para tener CRT y la clave cifrada con contrasena.",
+        LegacyKeyFormatWarning,
+        stacklevel=3,
+    )
+    return clave
+
+
+def _escribir_privado(path: str | Path, texto: str) -> None:
+    """
+    Escribe un archivo con permisos 0o600 (solo el propietario lee y escribe).
+
+    En POSIX se crea ya con esos permisos (os.open) y se reajusta con chmod por
+    si el archivo existia. En Windows chmod solo controla "solo lectura": los
+    permisos reales dependen de las ACL de la carpeta del usuario; el error se
+    ignora a proposito.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(str(path), flags, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(texto)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def save_private_key(private: tuple[int, int], path: str | Path, password=None,
+                     insecure_plain: bool = False, iterations: int | None = None) -> None:
+    """
+    Guarda una clave privada RSA en un archivo JSON.
+
+    Por defecto la clave se guarda CIFRADA con la contrasena (src/kdf_mac.py):
+    PBKDF2-HMAC-SHA256 -> claves separadas de cifrado y MAC -> flujo HMAC en
+    modo contador + etiqueta HMAC-SHA256 (encrypt-then-MAC). El archivo
+    contiene: version, kdf, iterations, salt, cipher, mac, nonce, ciphertext, tag.
+
+    insecure_plain=True guarda el formato v2 SIN cifrar (n, e, d, p, q, dp, dq,
+    qinv en hex). Solo para tests y demostraciones.
+
+    En ambos casos el archivo se crea con permisos 0o600 (ver _escribir_privado).
+
+    :param private: RSAPrivateKey o tupla (n, d).
+    :param path: Ruta del archivo donde guardar la clave (str o Path).
+    :param password: str, bytes o bytearray (el bytearray se sobrescribe con ceros).
+    :param insecure_plain: guarda sin cifrar (requiere password=None).
+    :param iterations: iteraciones de PBKDF2 (por defecto kdf_mac.DEFAULT_ITERATIONS).
+    :raises ValueError: si no hay contrasena y no se pidio insecure_plain.
+    """
+    data = private_key_to_dict(private)
+    if insecure_plain:
+        if password is not None:
+            raise ValueError("Indique password o insecure_plain=True, no ambos.")
+        _escribir_privado(path, json.dumps(data, indent=2))
+        return
+    if password is None:
+        raise ValueError("Se requiere una contrasena para guardar la clave privada "
+                         "(o insecure_plain=True solo para pruebas).")
+    plano = bytearray(json.dumps(data).encode("utf-8"))
+    try:
+        blob = kdf_mac.encrypt_blob(plano, password, iterations=iterations)
+    finally:
+        kdf_mac.wipe(plano)
+    _escribir_privado(path, json.dumps(blob, indent=2))
+
+
+def is_encrypted_key_file(path: str | Path) -> bool:
+    """True si el archivo es una clave privada cifrada con contrasena."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("version") == kdf_mac.ENC_FORMAT
+
+
+def load_private_key(path: str | Path, password=None) -> RSAPrivateKey:
+    """
+    Carga una clave privada RSA desde un archivo JSON.
+
+    Formatos aceptados:
+    - Cifrado con contrasena (rsa-sign-encrypted-key-v1): requiere password.
+    - v2 sin cifrar (n, e, d, p, q, dp, dq, qinv).
+    - Antiguo {n, d}: sin CRT, con aviso LegacyKeyFormatWarning.
 
     :param path: Ruta del archivo JSON a cargar (str o Path).
-    :return: Tupla (n, d) con la clave privada.
+    :param password: contrasena si el archivo esta cifrado.
+    :return: RSAPrivateKey (se comporta como la tupla (n, d)).
     :raises FileNotFoundError: Si el archivo no existe.
-    :raises ValueError: Si el archivo esta corrupto o el formato es invalido.
+    :raises ValueError: Si el archivo esta corrupto, falta la contrasena, la
+                        contrasena es incorrecta, el archivo fue alterado o la
+                        clave es incoherente.
     """
     path_obj = Path(path)
     if not path_obj.exists():
@@ -612,26 +879,19 @@ def load_private_key(path: str | Path) -> tuple[int, int]:
     except Exception as err:
         raise ValueError(f"Error al leer archivo de clave: {err}") from err
 
-    if not isinstance(data, dict):
-        raise ValueError("El contenido del JSON debe ser un diccionario.")
+    if isinstance(data, dict) and data.get("version") == kdf_mac.ENC_FORMAT:
+        if password is None:
+            raise ValueError("La clave privada esta cifrada: se requiere la contrasena.")
+        plano = kdf_mac.decrypt_blob(data, password)
+        try:
+            interno = json.loads(plano.decode("utf-8"))
+        except ValueError:
+            raise ValueError(kdf_mac.AUTH_ERROR) from None
+        finally:
+            kdf_mac.wipe(plano)
+        return private_key_from_dict(interno)
 
-    if "n" not in data or "d" not in data:
-        raise ValueError("El JSON de clave privada debe contener los campos 'n' y 'd'.")
-
-    try:
-        n_str = data["n"]
-        d_str = data["d"]
-        if not (isinstance(n_str, str) and isinstance(d_str, str)):
-            raise ValueError("Los valores de 'n' y 'd' deben ser cadenas de texto.")
-        n = int(n_str, 16)
-        d = int(d_str, 16)
-    except (ValueError, TypeError) as err:
-        raise ValueError(f"Formato hexadecimal invalido en clave privada: {err}") from err
-
-    if n <= 0 or d <= 0:
-        raise ValueError("Los componentes de la clave privada deben ser enteros positivos.")
-
-    return (n, d)
+    return private_key_from_dict(data)
 
 
 if __name__ == "__main__":

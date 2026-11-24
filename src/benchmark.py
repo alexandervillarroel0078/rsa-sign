@@ -33,12 +33,12 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 try:
-    from .rsa import decrypt_oaep, encrypt_oaep, generate_keypair, sign, verify
+    from .rsa import RSAPrivateKey, decrypt_oaep, encrypt_oaep, generate_keypair, sign, verify
     from .sha256 import sha256
 except ImportError:
     # Soporte para ejecucion directa
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from src.rsa import decrypt_oaep, encrypt_oaep, generate_keypair, sign, verify
+    from src.rsa import RSAPrivateKey, decrypt_oaep, encrypt_oaep, generate_keypair, sign, verify
     from src.sha256 import sha256
 
 
@@ -139,11 +139,14 @@ def time_operation(func: Callable, *args, **kwargs) -> tuple[float, any]:
 def _variantes_privadas(priv) -> list[tuple[str, object]]:
     """
     Variantes de clave privada a medir: la clave tal cual y, si tiene
-    parametros CRT (atributo 'p'), tambien la tupla (n, d) que fuerza la
-    exponenciacion completa sin CRT.
+    parametros CRT (atributo 'p'), tambien la misma clave sin p y q, que fuerza
+    la exponenciacion completa c^d mod n.
     """
     if getattr(priv, "p", None):
-        return [("", priv), (" sin CRT", (priv[0], priv[1]))]
+        # Misma clave sin p, q: conserva e, asi blinding y la comprobacion de
+        # la firma se aplican igual y la unica diferencia medida es el CRT.
+        sin_crt = RSAPrivateKey(priv[0], priv[1], e=priv.e)
+        return [("", priv), (" sin CRT", sin_crt)]
     return [("", priv)]
 
 
@@ -291,6 +294,24 @@ def run_sha_benchmark(
     return filas
 
 
+def describe_os(system: str | None = None, version: str | None = None) -> str:
+    """
+    Nombre del sistema operativo. En Windows, Python 3.10 informa "Windows-10"
+    tambien en Windows 11; Windows 11 se reconoce por el build >= 22000.
+    """
+    system = platform.system() if system is None else system
+    version = platform.version() if version is None else version
+    if system == "Windows":
+        try:
+            build = int(version.split(".")[2])
+        except (IndexError, ValueError):
+            return platform.platform()
+        if build >= 22000:
+            return f"Windows 11 (build {build})"
+        return f"Windows 10 (build {build})" if version.startswith("10.") else f"Windows {version}"
+    return platform.platform()
+
+
 def detect_environment() -> dict[str, str]:
     """CPU, sistema operativo y version de Python detectados automaticamente."""
     cpu = ""
@@ -313,7 +334,7 @@ def detect_environment() -> dict[str, str]:
     return {
         "cpu": (cpu or platform.processor() or "desconocido").strip(),
         "nucleos_logicos": str(__import__("os").cpu_count()),
-        "sistema": platform.platform(),
+        "sistema": describe_os(),
         "python": f"{platform.python_implementation()} {platform.python_version()}",
         "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }

@@ -35,7 +35,7 @@ class TestClavesDesdeArchivo(unittest.TestCase):
         cls.ruta_pub = tmp / "clave_publica.json"
         cls.ruta_priv = tmp / "clave_privada.json"
         save_public_key(cls.pub, cls.ruta_pub)
-        save_private_key(cls.priv, cls.ruta_priv)
+        save_private_key(cls.priv, cls.ruta_priv, insecure_plain=True)
         cls.pub_cargada = load_public_key(cls.ruta_pub)
         cls.priv_cargada = load_private_key(cls.ruta_priv)
 
@@ -83,7 +83,7 @@ class TestGuiCargaClaves(unittest.TestCase):
         self.ruta_pub = str(tmp / "clave_publica.json")
         self.ruta_priv = str(tmp / "clave_privada.json")
         save_public_key(self.pub, self.ruta_pub)
-        save_private_key(self.priv, self.ruta_priv)
+        save_private_key(self.priv, self.ruta_priv, insecure_plain=True)
 
     def tearDown(self):
         self.root.destroy()
@@ -96,15 +96,15 @@ class TestGuiCargaClaves(unittest.TestCase):
         return error
 
     def test_cargar_privada_sin_error(self):
-        """Cargar la privada guarda (n, d), no toca la publica y muestra n y d."""
+        """Cargar la privada guarda (n, d), no toca la publica y NO muestra d (Etapa 3)."""
         error = self._cargar(self.app._cargar_priv_tab1, self.ruta_priv)
         error.assert_not_called()
         self.assertEqual(self.app.current_priv, self.priv)
         self.assertIsNone(self.app.current_pub)
         texto = self.app.txt_keys.get("1.0", "end")
         self.assertIn(f"[+] Clave privada cargada desde {self.ruta_priv}", texto)
-        self.assertIn(f"n: {self.priv[0]}", texto)
-        self.assertIn(f"d: {self.priv[1]}", texto)
+        self.assertIn("1024 bits", texto)
+        self.assertNotIn(str(self.priv[1]), texto)
 
     def test_cargar_publica_sin_error(self):
         """Cargar la publica guarda (n, e) y muestra n y e."""

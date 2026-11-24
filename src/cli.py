@@ -16,7 +16,10 @@ Se puede ejecutar como:
 """
 
 import argparse
+import getpass
+import os
 import sys
+import warnings
 from pathlib import Path
 
 # Soporte para "python -m src.cli" (paquete) y "python src/cli.py" (script).
@@ -28,6 +31,7 @@ try:
         load_public_key,
         save_private_key,
         load_private_key,
+        is_encrypted_key_file,
         encrypt_oaep,
         decrypt_oaep,
         sign_hash,
@@ -35,6 +39,7 @@ try:
         public_key_fingerprint,
     )
     from .sha256 import sha256, sha256_file
+    from . import kdf_mac
     from .attacks import (
         fermat_attack_rsa,
         generate_weak_fermat_key,
@@ -43,6 +48,7 @@ try:
         demo_e_pequeno,
         demo_falsificacion_e1,
         demo_oraculo_oaep,
+        demo_timing,
     )
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -53,6 +59,7 @@ except ImportError:
         load_public_key,
         save_private_key,
         load_private_key,
+        is_encrypted_key_file,
         encrypt_oaep,
         decrypt_oaep,
         sign_hash,
@@ -60,6 +67,7 @@ except ImportError:
         public_key_fingerprint,
     )
     from src.sha256 import sha256, sha256_file
+    from src import kdf_mac
     from src.attacks import (
         fermat_attack_rsa,
         generate_weak_fermat_key,
@@ -68,6 +76,7 @@ except ImportError:
         demo_e_pequeno,
         demo_falsificacion_e1,
         demo_oraculo_oaep,
+        demo_timing,
     )
 
 
@@ -76,6 +85,83 @@ class CliError(Exception):
 
 
 MSG_VERIFICACION_FALLIDA = "[-] VERIFICACION FALLIDA: La firma es invalida o el mensaje fue adulterado."
+
+
+def _hay_terminal() -> bool:
+    """
+    True si stdin es una terminal interactiva. En Windows isatty() tambien es
+    True para el dispositivo NUL, asi que se confirma con GetConsoleMode, que
+    solo funciona sobre una consola real.
+    """
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            return False
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            modo = ctypes.c_uint32()
+            handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+            return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(modo)))
+        return True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _obtener_contrasena(args, confirmar: bool = False) -> bytearray:
+    """
+    Contrasena como bytearray (se borra despues de usarla):
+    - --pass-env VAR: se lee de la variable de entorno VAR (automatizacion y tests;
+      menos seguro: otras herramientas del sistema pueden ver el entorno).
+    - en otro caso, getpass (no se muestra al escribir). Con confirmar=True se
+      pide dos veces.
+    """
+    nombre = getattr(args, "pass_env", None)
+    if nombre:
+        valor = os.environ.get(nombre)
+        if not valor:
+            raise CliError(f"La variable de entorno {nombre} no existe o esta vacia.")
+        return bytearray(valor.encode("utf-8"))
+    # Sin terminal (tuberia, tarea programada, tests) getpass se quedaria
+    # esperando: en Windows lee la consola directamente e ignora stdin.
+    if not _hay_terminal():
+        raise CliError("La clave privada requiere contrasena y no hay terminal interactiva: "
+                       "use --pass-env VAR.")
+    try:
+        pw = bytearray(getpass.getpass("Contrasena de la clave privada: ").encode("utf-8"))
+        if confirmar:
+            otra = bytearray(getpass.getpass("Repita la contrasena: ").encode("utf-8"))
+            try:
+                if otra != pw:
+                    raise CliError("Las contrasenas no coinciden.")
+            finally:
+                kdf_mac.wipe(otra)
+    except EOFError:
+        raise CliError("No se pudo leer la contrasena (use --pass-env en modo no interactivo).") from None
+    if not pw:
+        raise CliError("La contrasena no puede estar vacia.")
+    return pw
+
+
+def _cargar_privada(args):
+    """
+    Carga la clave privada de args.key. Si esta cifrada pide la contrasena;
+    avisa (sin traceback) si el archivo esta en formato antiguo.
+    """
+    pw = _obtener_contrasena(args) if is_encrypted_key_file(args.key) else None
+    try:
+        with warnings.catch_warnings(record=True) as avisos:
+            warnings.simplefilter("always")
+            try:
+                clave = load_private_key(args.key, password=pw)
+            except ValueError as err:
+                if str(err) == kdf_mac.AUTH_ERROR:
+                    raise CliError("Contrasena incorrecta o archivo de clave alterado.") from None
+                raise
+    finally:
+        kdf_mac.wipe(pw)
+    for aviso in avisos:
+        print(f"[!] {aviso.message}")
+    return clave
 
 
 def _mostrar_huella(pub):
@@ -119,7 +205,16 @@ def cmd_keygen(args):
         save_public_key(pub, args.pub)
         print(f"[+] Clave publica guardada en: {args.pub}")
     if args.priv:
-        save_private_key(priv, args.priv)
+        if args.insecure_plain:
+            print("[!] AVISO: --insecure-plain guarda la clave privada SIN CIFRAR (solo pruebas/demos).")
+            save_private_key(priv, args.priv, insecure_plain=True)
+        else:
+            pw = _obtener_contrasena(args, confirmar=True)
+            try:
+                print("[*] Cifrando la clave privada (PBKDF2-HMAC-SHA256)...")
+                save_private_key(priv, args.priv, password=pw)
+            finally:
+                kdf_mac.wipe(pw)
         print(f"[+] Clave privada guardada en: {args.priv}")
 
 
@@ -144,7 +239,7 @@ def cmd_encrypt(args):
 
 
 def cmd_decrypt(args):
-    priv = load_private_key(args.key)
+    priv = _cargar_privada(args)
     texto_hex = args.hex if args.hex is not None else _leer_texto(args.file)
     c_bytes = _hex_a_bytes(texto_hex, "El criptograma")
 
@@ -163,7 +258,7 @@ def cmd_decrypt(args):
 
 
 def cmd_sign(args):
-    priv = load_private_key(args.key)
+    priv = _cargar_privada(args)
     firma = sign_hash(_resumen_mensaje(args), priv)
     sig_hex = firma.hex()
 
@@ -220,8 +315,9 @@ def cmd_attack_fermat(args):
         print(f"    q recuperado: {q}")
         print(f"    d recuperado: {priv_recuperada[1]}")
         if args.out:
-            save_private_key(priv_recuperada, args.out)
-            print(f"[+] Clave privada atacada guardada en: {args.out}")
+            # Resultado de una demo de ataque: se guarda sin cifrar, avisando.
+            save_private_key(priv_recuperada, args.out, insecure_plain=True)
+            print(f"[+] Clave privada atacada guardada SIN CIFRAR en: {args.out}")
 
 
 def cmd_corrupt(args):
@@ -235,7 +331,8 @@ def cmd_corrupt(args):
 
 
 def cmd_demo_ataque(args):
-    print("[!] RSA textbook / claves debiles: SOLO DEMOSTRACION, INSEGURO.")
+    if args.tipo != "timing":
+        print("[!] RSA textbook / claves debiles: SOLO DEMOSTRACION, INSEGURO.")
     if args.tipo == "maleabilidad":
         r = demo_maleabilidad()
         print(f"[*] El atacante multiplica E({r['a']}) * E({r['b']}) mod n sin conocer d.")
@@ -260,6 +357,15 @@ def cmd_demo_ataque(args):
         for msg, cnt in r["mensajes"].items():
             print(f"    {cnt:4d} x {msg}")
         print(f"[+] Mensajes de error distintos: {len(r['mensajes'])} (1 = sin oraculo)")
+    elif args.tipo == "timing":
+        r = demo_timing()
+        print(f"[*] Operacion privada c^d mod n, {r['bits']} bits, media de {r['reps']} repeticiones:")
+        print(f"    sin CRT: {r['sin_crt_s'] * 1000:8.2f} ms")
+        print(f"    con CRT: {r['con_crt_s'] * 1000:8.2f} ms   (speedup {r['speedup']:.2f}x)")
+        print("[*] Cuadrar y multiplicar depende de los bits del exponente:")
+        print(f"    exponente con 2 bits a 1:     {r['exp_2_unos_s'] * 1000:8.2f} ms")
+        print(f"    exponente con todos los bits: {r['exp_todo_unos_s'] * 1000:8.2f} ms")
+        print("    Defensa: blinding (c' = c * r^e) aleatoriza la base en cada operacion.")
 
 
 def _construir_parser() -> argparse.ArgumentParser:
@@ -271,7 +377,10 @@ def _construir_parser() -> argparse.ArgumentParser:
     p_keygen.add_argument("--bits", type=int, default=2048,
                           help="Tamano del modulo en bits: 1024, 2048, 3072, 4096 (default 2048)")
     p_keygen.add_argument("--pub", type=str, help="Archivo JSON donde guardar clave publica (ej: clave_publica.json)")
-    p_keygen.add_argument("--priv", type=str, help="Archivo JSON donde guardar clave privada (ej: clave_privada.json)")
+    p_keygen.add_argument("--priv", type=str, help="Archivo JSON donde guardar clave privada cifrada (ej: clave_privada.json)")
+    p_keygen.add_argument("--insecure-plain", action="store_true",
+                          help="Guardar la clave privada SIN cifrar (solo pruebas/demos)")
+    p_keygen.add_argument("--pass-env", metavar="VAR", help="Leer la contrasena de la variable de entorno VAR")
 
     # encrypt
     p_enc = subparsers.add_parser("encrypt", help="Cifrar mensaje con RSA-OAEP")
@@ -288,6 +397,7 @@ def _construir_parser() -> argparse.ArgumentParser:
     g.add_argument("--hex", type=str, help="Texto hexadecimal a descifrar")
     g.add_argument("--file", type=str, help="Archivo hexadecimal a descifrar")
     p_dec.add_argument("--out", type=str, help="Archivo de salida")
+    p_dec.add_argument("--pass-env", metavar="VAR", help="Leer la contrasena de la variable de entorno VAR")
 
     # sign
     p_sign = subparsers.add_parser("sign", help="Firmar documento con RSA-PSS")
@@ -296,6 +406,7 @@ def _construir_parser() -> argparse.ArgumentParser:
     g.add_argument("--msg", type=str, help="Texto a firmar (puede ser vacio)")
     g.add_argument("--file", type=str, help="Archivo a firmar (se lee por bloques)")
     p_sign.add_argument("--out", type=str, help="Archivo de salida para la firma")
+    p_sign.add_argument("--pass-env", metavar="VAR", help="Leer la contrasena de la variable de entorno VAR")
 
     # verify
     p_ver = subparsers.add_parser("verify", help="Verificar firma digital RSA-PSS")
@@ -322,9 +433,10 @@ def _construir_parser() -> argparse.ArgumentParser:
 
     # demo-ataque
     p_demo = subparsers.add_parser("demo-ataque", help="Demostraciones de ataques (SOLO DEMOSTRACION)")
-    p_demo.add_argument("tipo", choices=["maleabilidad", "e-pequeno", "e1", "oraculo"],
+    p_demo.add_argument("tipo", choices=["maleabilidad", "e-pequeno", "e1", "oraculo", "timing"],
                         help="maleabilidad: RSA textbook | e-pequeno: e=3 sin relleno | "
-                             "e1: firma falsa con e=1 (rechazada) | oraculo: errores OAEP")
+                             "e1: firma falsa con e=1 (rechazada) | oraculo: errores OAEP | "
+                             "timing: con/sin CRT y dependencia del exponente")
     return parser
 
 
